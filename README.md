@@ -27,7 +27,7 @@ ISC_FN_DIR="${ISC_FUNCTIONS_DIR:-$SCRIPT_DIR/../linux_installation_scripts_funct
 if [ -f "$ISC_FN_DIR/component_loader.sh" ]; then
   source "$ISC_FN_DIR/component_loader.sh"
 else
-  source <(curl -fsSL "https://raw.githubusercontent.com/mikaeltorni/linux_installation_scripts_functions/${ISC_FUNCTIONS_REF:-main}/component_loader.sh")
+  source <(curl -fsSL "https://raw.githubusercontent.com/mikaeltorni/linux_installation_scripts_functions/${ISC_FUNCTIONS_REF:-master}/component_loader.sh")
 fi
 isc_activate_components
 source "$SCRIPT_DIR/installer/components.sh"   # repo-specific manifest

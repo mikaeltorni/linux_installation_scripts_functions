@@ -192,7 +192,7 @@ _isc_load_menu() {
     # shellcheck source=/dev/null
     source "$dir/component_menu.sh" && return 0
   done
-  local raw="${ISC_MENU_RAW_URL:-https://raw.githubusercontent.com/mikaeltorni/linux_installation_scripts_functions/main/component_menu.sh}"
+  local raw="${ISC_MENU_RAW_URL:-https://raw.githubusercontent.com/mikaeltorni/linux_installation_scripts_functions/master/component_menu.sh}"
   local tmp
   tmp="$(mktemp 2>/dev/null)" || return 1
   if command -v curl >/dev/null 2>&1 && curl -fsSL "$raw" -o "$tmp" 2>/dev/null; then
