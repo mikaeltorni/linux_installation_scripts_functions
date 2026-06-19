@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""Behavioral tests for the shared installer component framework.
+
+Exercises component_runtime.sh (the per-repository --list-components / --select
+/ --default contract), component_menu.sh (count helpers), and
+component_loader.sh (library resolution + activation) entirely through isolated
+Bash subprocesses with a synthetic manifest. No installers run and no system
+state changes.
+"""
+
+import subprocess
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+
+HARNESS = f"""
+set -uo pipefail
+source "{REPO}/component_runtime.sh"
+comp_a() {{ echo "ran:a"; }}
+comp_b() {{ echo "ran:b"; }}
+comp_c() {{ echo "ran:c"; }}
+pre() {{ echo "preflight"; }}
+post() {{ echo "postflight"; }}
+ISC_REPO_NAME="demo"
+ISC_REPO_LABEL="Demo"
+ISC_PREFLIGHT="pre"
+ISC_POSTFLIGHT="post"
+ISC_COMPONENTS=(
+  "alpha|Alpha|on|comp_a"
+  "beta|Beta|on|comp_b"
+  "gamma|Gamma|off|comp_c"
+)
+component_main "$@"
+"""
+
+
+def run(args):
+    """Run the harness installer with args and return (rc, stdout)."""
+    result = subprocess.run(
+        ["bash", "-c", HARNESS, "bash", *args],
+        cwd=REPO,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, result.stdout
+
+
+def test_framework_files_exist():
+    """The framework files should exist in the repository root."""
+    for name in ("component_menu.sh", "component_runtime.sh", "component_loader.sh"):
+        assert (REPO / name).is_file(), f"missing {name}"
+
+
+def test_list_components_format():
+    """--list-components should print id<TAB>label<TAB>default per component."""
+    rc, out = run(["--list-components"])
+    assert rc == 0, out
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    assert lines == ["alpha\tAlpha\ton", "beta\tBeta\ton", "gamma\tGamma\toff"], out
+
+
+def test_default_runs_only_default_on():
+    """--default should run default-on components and skip default-off ones."""
+    rc, out = run(["--default"])
+    assert rc == 0, out
+    assert "ran:a" in out and "ran:b" in out and "ran:c" not in out
+
+
+def test_all_runs_every_component():
+    """--all should run every component including default-off ones."""
+    rc, out = run(["--all"])
+    assert rc == 0, out
+    assert "ran:a" in out and "ran:b" in out and "ran:c" in out
+
+
+def test_select_runs_exact_subset_in_manifest_order():
+    """--select should run exactly the requested ids in manifest order."""
+    rc, out = run(["--select", "gamma,alpha"])
+    assert rc == 0, out
+    order = [ln.split(":")[1] for ln in out.splitlines() if ln.startswith("ran:")]
+    assert order == ["a", "c"], out
+
+
+def test_preflight_and_postflight_run_once():
+    """Preflight runs before and postflight after the selected components."""
+    rc, out = run(["--select", "alpha"])
+    assert rc == 0, out
+    assert out.count("preflight") == 1 and out.count("postflight") == 1
+    assert out.index("preflight") < out.index("ran:a") < out.index("postflight")
+
+
+def test_no_match_is_a_noop():
+    """An unmatched selection runs nothing, including the preflight."""
+    rc, out = run(["--select", "nonexistent"])
+    assert rc == 0, out
+    assert "preflight" not in out and "postflight" not in out
+
+
+def test_count_helpers():
+    """The menu should report enabled/total counts like the '5/8' indicator."""
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+CM_COMP_IDS[r]="x1 x2 x3 x4"
+CM_COMP_ON["r|x1"]=1; CM_COMP_ON["r|x2"]=0; CM_COMP_ON["r|x3"]=1; CM_COMP_ON["r|x4"]=0
+printf '%s/%s\\n' "$(cm_repo_on_count r)" "$(cm_repo_total_count r)"
+"""
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "2/4"
+
+
+def test_loader_resolves_sibling_checkout():
+    """isc_activate_components should find the framework via a sibling checkout."""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        # Sibling layout: base/linux_installation_scripts_functions + base/consumer
+        sib = base / "linux_installation_scripts_functions"
+        sib.mkdir()
+        for name in ("component_menu.sh", "component_runtime.sh", "component_loader.sh"):
+            (sib / name).write_text((REPO / name).read_text())
+        consumer = base / "consumer"
+        consumer.mkdir()
+        script = f"""
+set -uo pipefail
+SCRIPT_DIR="{consumer}"
+source "{sib}/component_loader.sh"
+isc_activate_components
+declare -F component_main >/dev/null && echo "runtime:ok"
+echo "libdir:$ISC_COMPONENT_LIB_DIR"
+"""
+        # Run with HOME pointed away so only the sibling path can satisfy it.
+        result = subprocess.run(
+            ["bash", "-c", script],
+            cwd=consumer,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(base / "nohome")},
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode == 0, result.stderr
+    assert "runtime:ok" in result.stdout, result.stdout
+    assert str(sib) in result.stdout, result.stdout
+
+
+if __name__ == "__main__":
+    tests = [v for n, v in globals().items() if n.startswith("test_") and callable(v)]
+    failures = 0
+    for test in sorted(tests, key=lambda item: item.__name__):
+        try:
+            test()
+            print(f"PASS: {test.__doc__}")
+        except Exception as error:  # noqa: BLE001
+            failures += 1
+            print(f"FAIL: {test.__doc__} - {error}")
+    raise SystemExit(failures)

@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# component_menu.sh - Shared pure-Bash TUI for installer component selection.
+#
+# This is the single source of truth for the interactive selection menu used by
+# the master installer (a two-level repo -> component menu) and by each child
+# repository's standalone installer (a single-repo component submenu). It has no
+# external dependencies beyond a POSIX terminal and Bash, so it works on a fresh
+# Ubuntu install before any packages are added.
+#
+# The menu operates on a small set of well-known global arrays that the caller
+# populates before invoking an entry point:
+#
+#   CM_REPOS              - ordered array of repo ids (top-level rows)
+#   CM_REPO_LABEL[repo]   - human label for a repo row
+#   CM_REPO_ENABLED[repo] - 1 when the whole repo is enabled, 0 when disabled
+#   CM_COMP_IDS[repo]     - space-separated component ids belonging to a repo
+#   CM_COMP_LABEL[repo|id]- human label for a component
+#   CM_COMP_ON[repo|id]   - 1 when that component is selected, 0 otherwise
+#
+# Entry points (all mutate the arrays in place):
+#   cm_aggregate_menu     - two-level menu: rows are repos; SPACE enables or
+#                           disables a whole repo; RIGHT enters the repo's
+#                           component submenu; ENTER accepts; q/Esc cancels.
+#   cm_single_submenu REPO- flat component checklist for one repo; ENTER accepts
+#                           (returns 0); q/Esc cancels (returns 1).
+#
+# Usage:
+#   source "<dir>/component_menu.sh"
+#   ... populate CM_* arrays ...
+#   cm_aggregate_menu   # or: cm_single_submenu "<repo>"
+
+# Guard against double-sourcing.
+if [[ -n "${CM_MENU_SOURCED:-}" ]]; then
+  return 0 2>/dev/null || true
+fi
+CM_MENU_SOURCED=1
+
+# Associative state shared with callers. Declared here so sourcing alone makes
+# them available; callers may also declare them, which is harmless.
+declare -gA CM_REPO_LABEL CM_REPO_ENABLED CM_COMP_IDS CM_COMP_LABEL CM_COMP_ON 2>/dev/null || true
+declare -ga CM_REPOS 2>/dev/null || true
+
+###############################################################################
+# Terminal helpers
+###############################################################################
+
+# Hide the terminal cursor for clean rendering.
+cm_hide_cursor() { printf '\033[?25l'; }
+
+# Restore the terminal cursor.
+cm_show_cursor() { printf '\033[?25h'; }
+
+# Clear the screen and move the cursor to the home position.
+cm_clear() { printf '\033[2J\033[H'; }
+
+# Read a single keypress and echo a normalized token.
+#
+# Returns one of: UP DOWN LEFT RIGHT SPACE ENTER ESC QUIT ALL NONE OTHER.
+cm_read_key() {
+  local key rest
+  IFS= read -rsn1 key 2>/dev/null || { echo QUIT; return; }
+  case "$key" in
+    '')   echo ENTER ;;
+    ' ')  echo SPACE ;;
+    $'\x1b')
+      # Possible escape sequence (arrow keys). Read the rest with a short
+      # timeout so a bare Esc is still recognized.
+      read -rsn2 -t 0.005 rest 2>/dev/null || rest=''
+      case "$rest" in
+        '[A'|'OA') echo UP ;;
+        '[B'|'OB') echo DOWN ;;
+        '[C'|'OC') echo RIGHT ;;
+        '[D'|'OD') echo LEFT ;;
+        '')        echo ESC ;;
+        *)         echo OTHER ;;
+      esac
+      ;;
+    q|Q) echo QUIT ;;
+    a|A) echo ALL ;;
+    n|N) echo NONE ;;
+    *)   echo OTHER ;;
+  esac
+}
+
+###############################################################################
+# Count helpers
+###############################################################################
+
+# Echo the number of enabled components for a repo.
+cm_repo_on_count() {
+  local repo="$1" id count=0
+  for id in ${CM_COMP_IDS[$repo]:-}; do
+    [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]] && count=$((count + 1))
+  done
+  printf '%s' "$count"
+}
+
+# Echo the total number of components for a repo.
+cm_repo_total_count() {
+  local repo="$1" id count=0
+  for id in ${CM_COMP_IDS[$repo]:-}; do count=$((count + 1)); done
+  printf '%s' "$count"
+}
+
+###############################################################################
+# Submenu (component checklist for a single repo)
+###############################################################################
+
+# Render the component checklist for one repo.
+#
+# Arguments:
+#   $1 - repo id
+#   $2 - currently selected row index
+#   $3 - title line
+#   $4 - footer/help line
+cm_render_submenu() {
+  local repo="$1" sel="$2" title="$3" footer="$4"
+  local -a ids=(${CM_COMP_IDS[$repo]:-})
+  local i id mark box label on total
+  on="$(cm_repo_on_count "$repo")"
+  total="$(cm_repo_total_count "$repo")"
+  cm_clear
+  printf '  \033[1m%s\033[0m\n' "$title"
+  printf '  \033[2m%s — %s/%s enabled\033[0m\n\n' "${CM_REPO_LABEL[$repo]:-$repo}" "$on" "$total"
+  for i in "${!ids[@]}"; do
+    id="${ids[$i]}"
+    if [[ "$i" == "$sel" ]]; then mark='\033[36m›\033[0m'; else mark=' '; fi
+    if [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then box='[\033[32mx\033[0m]'; else box='[ ]'; fi
+    label="${CM_COMP_LABEL[$repo|$id]:-$id}"
+    printf '   %b %b %s\n' "$mark" "$box" "$label"
+  done
+  printf '\n  \033[2m%s\033[0m\n' "$footer"
+}
+
+# Drive the component checklist for one repo until the user leaves it.
+#
+# Arguments:
+#   $1 - repo id
+#   $2 - "standalone" to make ENTER accept and return 0 / q-Esc return 1, or
+#        "embedded" to make ENTER and LEFT return 0 (back to the parent menu).
+#
+# Returns:
+#   0 when accepted / returned to parent; 1 when cancelled in standalone mode.
+cm_submenu_loop() {
+  local repo="$1" mode="${2:-embedded}"
+  local -a ids=(${CM_COMP_IDS[$repo]:-})
+  local sel=0 key id title footer
+  title="Configure components"
+  if [[ "$mode" == "standalone" ]]; then
+    footer="[↑/↓] move   [space] toggle   [a] all   [n] none   [enter] install   [q] cancel"
+  else
+    footer="[↑/↓] move   [space] toggle   [a] all   [n] none   [←/enter] back"
+  fi
+  while true; do
+    (( sel < 0 )) && sel=0
+    (( ${#ids[@]} > 0 && sel >= ${#ids[@]} )) && sel=$(( ${#ids[@]} - 1 ))
+    cm_render_submenu "$repo" "$sel" "$title" "$footer"
+    key="$(cm_read_key)"
+    case "$key" in
+      UP)    sel=$((sel - 1)) ;;
+      DOWN)  sel=$((sel + 1)) ;;
+      SPACE)
+        id="${ids[$sel]:-}"
+        [[ -z "$id" ]] && continue
+        if [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then
+          CM_COMP_ON[$repo|$id]=0
+        else
+          CM_COMP_ON[$repo|$id]=1
+        fi
+        ;;
+      ALL)  for id in "${ids[@]}"; do CM_COMP_ON[$repo|$id]=1; done ;;
+      NONE) for id in "${ids[@]}"; do CM_COMP_ON[$repo|$id]=0; done ;;
+      LEFT)
+        [[ "$mode" == "embedded" ]] && return 0
+        ;;
+      ENTER) return 0 ;;
+      ESC|QUIT)
+        [[ "$mode" == "standalone" ]] && return 1
+        return 0
+        ;;
+    esac
+  done
+}
+
+# Public: run a standalone single-repo component submenu.
+#
+# Arguments:
+#   $1 - repo id
+#
+# Returns:
+#   0 when the user accepted (install), 1 when cancelled.
+cm_single_submenu() {
+  local repo="$1"
+  cm_hide_cursor
+  trap 'cm_show_cursor' RETURN
+  cm_submenu_loop "$repo" standalone
+  local rc=$?
+  cm_show_cursor
+  cm_clear
+  trap - RETURN
+  return $rc
+}
+
+###############################################################################
+# Aggregate menu (repos as rows with submenu drill-down)
+###############################################################################
+
+# Render the top-level repo menu.
+#
+# Arguments:
+#   $1 - currently selected row index
+cm_render_aggregate() {
+  local sel="$1"
+  local i repo mark box label on total status
+  cm_clear
+  printf '  \033[1mInstallation Components\033[0m\n'
+  printf '  \033[2mSelect what to install. Disabled repositories are skipped entirely.\033[0m\n\n'
+  for i in "${!CM_REPOS[@]}"; do
+    repo="${CM_REPOS[$i]}"
+    if [[ "$i" == "$sel" ]]; then mark='\033[36m›\033[0m'; else mark=' '; fi
+    if [[ "${CM_REPO_ENABLED[$repo]:-0}" == "1" ]]; then box='[\033[32mx\033[0m]'; else box='[ ]'; fi
+    label="${CM_REPO_LABEL[$repo]:-$repo}"
+    total="$(cm_repo_total_count "$repo")"
+    if [[ "${CM_REPO_ENABLED[$repo]:-0}" == "1" ]]; then
+      on="$(cm_repo_on_count "$repo")"
+      if (( total > 0 )); then
+        status="$(printf '(%s/%s) \033[36m›\033[0m' "$on" "$total")"
+      else
+        status='(no options)'
+      fi
+    else
+      status='\033[2mdisabled\033[0m'
+    fi
+    printf '   %b %b %-44s %b\n' "$mark" "$box" "$label" "$status"
+  done
+  printf '\n  \033[2m[↑/↓] move   [space] enable/disable   [→] configure   [enter] install   [q] cancel\033[0m\n'
+}
+
+# Public: run the two-level aggregate menu.
+#
+# Returns:
+#   0 when the user accepted the selection (ENTER); 1 when cancelled (q/Esc).
+cm_aggregate_menu() {
+  local sel=0 key repo
+  cm_hide_cursor
+  while true; do
+    (( sel < 0 )) && sel=0
+    (( sel >= ${#CM_REPOS[@]} )) && sel=$(( ${#CM_REPOS[@]} - 1 ))
+    cm_render_aggregate "$sel"
+    key="$(cm_read_key)"
+    repo="${CM_REPOS[$sel]:-}"
+    case "$key" in
+      UP)    sel=$((sel - 1)) ;;
+      DOWN)  sel=$((sel + 1)) ;;
+      SPACE)
+        [[ -z "$repo" ]] && continue
+        if [[ "${CM_REPO_ENABLED[$repo]:-0}" == "1" ]]; then
+          CM_REPO_ENABLED[$repo]=0
+        else
+          CM_REPO_ENABLED[$repo]=1
+        fi
+        ;;
+      RIGHT)
+        [[ -z "$repo" ]] && continue
+        [[ "${CM_REPO_ENABLED[$repo]:-0}" != "1" ]] && continue
+        [[ "$(cm_repo_total_count "$repo")" == "0" ]] && continue
+        cm_submenu_loop "$repo" embedded
+        ;;
+      ENTER)
+        cm_show_cursor; cm_clear
+        return 0
+        ;;
+      ESC|QUIT)
+        cm_show_cursor; cm_clear
+        return 1
+        ;;
+    esac
+  done
+}
