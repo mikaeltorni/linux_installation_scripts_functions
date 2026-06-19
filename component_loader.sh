@@ -88,3 +88,21 @@ isc_activate_components() {
   # shellcheck source=/dev/null
   source "$dir/component_runtime.sh"
 }
+
+# isc_load_menu - source only the TUI engine (component_menu.sh). The master
+# installer uses this directly to drive the aggregate two-level menu without
+# needing the per-repository runtime.
+#
+# Returns:
+#   0 on success; non-zero when the framework could not be loaded.
+isc_load_menu() {
+  declare -F cm_aggregate_menu >/dev/null 2>&1 && return 0
+  local dir
+  dir="$(isc_component_lib_dir)" || {
+    echo "ERROR: could not resolve installer component framework (${ISC_FUNCTIONS_REPO})." >&2
+    return 1
+  }
+  export ISC_COMPONENT_LIB_DIR="$dir"
+  # shellcheck source=/dev/null
+  source "$dir/component_menu.sh"
+}
