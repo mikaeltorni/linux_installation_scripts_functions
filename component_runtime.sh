@@ -39,6 +39,26 @@ if [[ -n "${ISC_RUNTIME_SOURCED:-}" ]]; then
 fi
 ISC_RUNTIME_SOURCED=1
 
+# Ensure the centralized logging helpers exist. Source component_logging.sh from
+# next to this runtime when present, otherwise define silent no-op stubs so every
+# isc_log* call below is always safe (logging must never abort an installer).
+if ! declare -F isc_log >/dev/null 2>&1; then
+  _isc_rt_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _isc_rt_dir=""
+  if [[ -n "$_isc_rt_dir" && -f "$_isc_rt_dir/component_logging.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$_isc_rt_dir/component_logging.sh"
+  fi
+  unset _isc_rt_dir
+fi
+if ! declare -F isc_log >/dev/null 2>&1; then
+  isc_log()         { :; }
+  isc_log_verbose() { :; }
+  isc_log_debug()   { :; }
+  isc_log_info()    { :; }
+  isc_log_warn()    { :; }
+  isc_log_error()   { :; }
+fi
+
 # Fallback status printer if the repository did not define msg().
 if ! declare -F msg >/dev/null 2>&1; then
   msg() { printf "\n==> %s\n" "$*"; }
@@ -135,6 +155,7 @@ _isc_run_selected() {
   local selected=" $(tr ',\n' '  ' <<<"$1") "
   local entry id label def fn ran=0
   local -a failed=()
+  isc_log_info "run_selected requested ids:${selected}"
   for entry in "${ISC_COMPONENTS[@]}"; do
     IFS='|' read -r id label def fn <<<"$entry"
     [[ "$selected" == *" $id "* ]] || continue
@@ -143,37 +164,54 @@ _isc_run_selected() {
     # genuine no-op.
     if (( ran == 0 )) && [[ -n "${ISC_PREFLIGHT:-}" ]] \
        && declare -F "$ISC_PREFLIGHT" >/dev/null 2>&1; then
-      "$ISC_PREFLIGHT" || msg "WARN: preflight '$ISC_PREFLIGHT' reported a problem (continuing)"
+      isc_log_debug "running preflight '$ISC_PREFLIGHT'"
+      "$ISC_PREFLIGHT" || {
+        isc_log_warn "preflight '$ISC_PREFLIGHT' reported a problem (continuing)"
+        msg "WARN: preflight '$ISC_PREFLIGHT' reported a problem (continuing)"
+      }
     fi
     ran=$((ran + 1))
     if [[ -z "$fn" ]]; then
+      isc_log_warn "component '$id' has no install function — skipping"
       msg "WARN: component '$id' has no install function — skipping"
       continue
     fi
     if ! declare -F "$fn" >/dev/null 2>&1; then
+      isc_log_warn "install function '$fn' for component '$id' is not defined — skipping"
       msg "WARN: install function '$fn' for component '$id' is not defined — skipping"
       failed+=("$id")
       continue
     fi
+    isc_log_info "installing component: $label ($id) via $fn"
     msg "[$ISC_REPO_NAME] Installing component: $label ($id)"
     if ! "$fn"; then
+      isc_log_error "component '$id' failed (continuing)"
       msg "WARN: component '$id' failed (continuing)"
       failed+=("$id")
+    else
+      isc_log_info "component '$id' completed"
     fi
   done
   # Optional postflight (e.g. audits, sudo-required summaries) after components.
   if (( ran > 0 )) && [[ -n "${ISC_POSTFLIGHT:-}" ]] \
      && declare -F "$ISC_POSTFLIGHT" >/dev/null 2>&1; then
-    "$ISC_POSTFLIGHT" || msg "WARN: postflight '$ISC_POSTFLIGHT' reported a problem (continuing)"
+    isc_log_debug "running postflight '$ISC_POSTFLIGHT'"
+    "$ISC_POSTFLIGHT" || {
+      isc_log_warn "postflight '$ISC_POSTFLIGHT' reported a problem (continuing)"
+      msg "WARN: postflight '$ISC_POSTFLIGHT' reported a problem (continuing)"
+    }
   fi
 
   if (( ran == 0 )); then
+    isc_log_info "no components selected — nothing to do"
     msg "[$ISC_REPO_NAME] No components selected — nothing to do."
   fi
   if (( ${#failed[@]} > 0 )); then
+    isc_log_error "components with failures: ${failed[*]}"
     msg "[$ISC_REPO_NAME] Components with failures: ${failed[*]}"
     return 1
   fi
+  isc_log_info "run_selected completed successfully ($ran component(s))"
   return 0
 }
 
@@ -213,12 +251,14 @@ _isc_load_menu() {
   local dir
   for dir in "${ISC_COMPONENT_LIB_DIR:-}" "$here"; do
     [[ -n "$dir" && -f "$dir/component_menu.sh" ]] || continue
+    isc_log_debug "sourcing menu engine from local dir: $dir"
     # shellcheck source=/dev/null
     source "$dir/component_menu.sh" && return 0
   done
   local raw="${ISC_MENU_RAW_URL:-https://raw.githubusercontent.com/mikaeltorni/linux_installation_scripts_functions/master/component_menu.sh}"
+  isc_log_debug "menu engine not found locally — downloading from $raw"
   local tmp
-  tmp="$(mktemp 2>/dev/null)" || return 1
+  tmp="$(mktemp 2>/dev/null)" || { isc_log_error "mktemp failed while fetching menu engine"; return 1; }
   if command -v curl >/dev/null 2>&1 && curl -fsSL "$raw" -o "$tmp" 2>/dev/null; then
     # shellcheck source=/dev/null
     source "$tmp" && { rm -f "$tmp"; return 0; }
@@ -227,6 +267,7 @@ _isc_load_menu() {
     source "$tmp" && { rm -f "$tmp"; return 0; }
   fi
   rm -f "$tmp"
+  isc_log_error "could not load menu engine (no local copy and download failed)"
   return 1
 }
 
@@ -236,6 +277,7 @@ _isc_load_menu() {
 # user accepted, or returns 1 when cancelled / the menu was unavailable.
 _isc_interactive_select() {
   if ! _isc_load_menu; then
+    isc_log_warn "interactive menu unavailable — caller will fall back to defaults"
     return 2
   fi
   local repo="${ISC_REPO_NAME:-repo}" id def
@@ -253,11 +295,13 @@ _isc_interactive_select() {
   CM_COMP_IDS[$repo]="${ids% }"
 
   if cm_single_submenu "$repo"; then
+    isc_log_info "interactive selection accepted for repo '$repo'"
     for id in ${CM_COMP_IDS[$repo]}; do
       [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]] && printf '%s\n' "$id"
     done
     return 0
   fi
+  isc_log_info "interactive selection cancelled for repo '$repo'"
   return 1
 }
 
@@ -274,10 +318,12 @@ _isc_interactive_select() {
 #   The exit status of the selected operation.
 component_main() {
   if [[ -z "${ISC_COMPONENTS:-}" ]]; then
+    isc_log_error "ISC_COMPONENTS manifest is not defined"
     msg "ERROR: ISC_COMPONENTS manifest is not defined."
     return 2
   fi
 
+  isc_log_info "component_main invoked for '${ISC_REPO_NAME:-installer}' with args: $*"
   local mode="" select_ids=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -287,10 +333,12 @@ component_main() {
       --select)          mode="select"; select_ids="${2:-}"; shift ;;
       --select=*)        mode="select"; select_ids="${1#*=}" ;;
       --help|-h)         _isc_usage; return 0 ;;
-      *)                 msg "WARN: ignoring unknown argument: $1" ;;
+      *)                 isc_log_warn "ignoring unknown argument: $1"
+                         msg "WARN: ignoring unknown argument: $1" ;;
     esac
     shift
   done
+  isc_log_debug "resolved mode='${mode:-interactive}' select_ids='${select_ids}'"
 
   case "$mode" in
     default) _isc_run_selected "$(_isc_default_ids)"; return $? ;;
@@ -303,15 +351,18 @@ component_main() {
         local chosen rc
         chosen="$(_isc_interactive_select)"; rc=$?
         if (( rc == 2 )); then
+          isc_log_info "interactive menu unavailable — installing default components"
           msg "Interactive menu unavailable — installing default components."
           _isc_run_selected "$(_isc_default_ids)"; return $?
         fi
         if (( rc != 0 )); then
+          isc_log_info "selection cancelled — nothing installed"
           msg "Selection cancelled — nothing installed."
           return 0
         fi
         _isc_run_selected "$chosen"; return $?
       else
+        isc_log_info "no TTY — installing default components non-interactively"
         _isc_run_selected "$(_isc_default_ids)"; return $?
       fi
       ;;

@@ -14,6 +14,7 @@ their own copies, so a change here updates all of them at once.
 | `component_menu.sh` | Pure-Bash TUI engine: a two-level selection menu (repository rows with enable/disable, per-repository component submenus, and live `on/total` counts). No external dependencies. |
 | `component_runtime.sh` | The per-repository installer contract: `--list-components`, `--select id,…`, `--default`, `--all`, an interactive submenu, and optional `ISC_PREFLIGHT` / `ISC_POSTFLIGHT` hooks. |
 | `component_loader.sh` | Resolves and activates the framework from a sibling checkout or by downloading it; exposes `isc_activate_components`. |
+| `component_logging.sh` | Centralized, dependency-free leveled logging (`verbose`/`debug`/`info`/`warn`/`error`) written to a per-repository `.log/` file with timestamps and a context tag. Sourced automatically by the loader, runtime, and menu; degrades to silent no-ops when absent. |
 
 ## How a repository uses it
 
@@ -71,6 +72,22 @@ In the `installation_scripts` clean-install chain this repository is cloned as a
 sibling, so installers resolve it locally with no network call. Standalone, a
 single repository downloads the framework on demand. Set `ISC_FUNCTIONS_REF` to
 pin a branch/tag or `ISC_FUNCTIONS_RAW` for a private mirror.
+
+## Logging
+
+Every framework entry point records leveled, timestamped diagnostics through
+`component_logging.sh`. Logs are written to a file (never the terminal, so the
+TUI is never corrupted) and the directory is created on demand:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ISC_LOG_DIR` | `${SCRIPT_DIR:-$PWD}/.log` | Directory for log files (the consuming repo's `.log/`). |
+| `ISC_LOG_NAME` | `installer_components.log` | Log file name within `ISC_LOG_DIR`. |
+| `ISC_LOG_LEVEL` | `debug` | Minimum level recorded (`verbose` < `debug` < `info` < `warn` < `error`). |
+| `ISC_LOG_TAG` | `$ISC_REPO_NAME`, else `framework` | Context tag added to each line. |
+
+Log files are runtime artifacts and are git-ignored via `.log/`. Logging is
+best-effort: a read-only filesystem or missing `date` never aborts an installer.
 
 ## Tests
 

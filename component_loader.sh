@@ -29,6 +29,26 @@ if [[ -n "${ISC_LOADER_SOURCED:-}" ]]; then
 fi
 ISC_LOADER_SOURCED=1
 
+# Ensure the centralized logging helpers exist. Source component_logging.sh from
+# next to this loader when present, otherwise define silent no-op stubs so every
+# isc_log* call below is always safe (logging must never abort an installer).
+if ! declare -F isc_log >/dev/null 2>&1; then
+  _isc_loader_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _isc_loader_dir=""
+  if [[ -n "$_isc_loader_dir" && -f "$_isc_loader_dir/component_logging.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$_isc_loader_dir/component_logging.sh"
+  fi
+  unset _isc_loader_dir
+fi
+if ! declare -F isc_log >/dev/null 2>&1; then
+  isc_log()         { :; }
+  isc_log_verbose() { :; }
+  isc_log_debug()   { :; }
+  isc_log_info()    { :; }
+  isc_log_warn()    { :; }
+  isc_log_error()   { :; }
+fi
+
 # Repository identity and download location. Override ISC_FUNCTIONS_REF to pin a
 # branch/tag, or ISC_FUNCTIONS_RAW for a private mirror.
 ISC_FUNCTIONS_REPO="${ISC_FUNCTIONS_REPO:-linux_installation_scripts_functions}"
@@ -50,23 +70,31 @@ isc_component_lib_dir() {
       "${SCRIPT_DIR:-}/../${ISC_FUNCTIONS_REPO}" \
       "${HOME}/projects/${ISC_FUNCTIONS_REPO}"; do
     [[ -n "$d" && -f "$d/component_runtime.sh" && -f "$d/component_menu.sh" ]] || continue
+    isc_log_debug "resolved component library from local checkout: $d"
     ( cd "$d" && pwd )
     return 0
   done
 
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/installation_scripts/components"
-  mkdir -p "$cache" 2>/dev/null || return 1
-  for f in component_menu.sh component_runtime.sh; do
+  mkdir -p "$cache" 2>/dev/null || { isc_log_error "cannot create cache dir: $cache"; return 1; }
+  # component_logging.sh is downloaded opportunistically (it is not part of the
+  # existence gate above) so older checkouts without it still resolve.
+  for f in component_logging.sh component_menu.sh component_runtime.sh; do
     if [[ ! -f "$cache/$f" || "${ISC_FUNCTIONS_REFRESH:-0}" == "1" ]]; then
+      isc_log_debug "downloading $f from $ISC_FUNCTIONS_RAW"
       if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$ISC_FUNCTIONS_RAW/$f" -o "$cache/$f" || return 1
+        curl -fsSL "$ISC_FUNCTIONS_RAW/$f" -o "$cache/$f" \
+          || { isc_log_error "curl failed for $f"; return 1; }
       elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$cache/$f" "$ISC_FUNCTIONS_RAW/$f" || return 1
+        wget -qO "$cache/$f" "$ISC_FUNCTIONS_RAW/$f" \
+          || { isc_log_error "wget failed for $f"; return 1; }
       else
+        isc_log_error "neither curl nor wget available to download $f"
         return 1
       fi
     fi
   done
+  isc_log_debug "resolved component library from download cache: $cache"
   printf '%s' "$cache"
 }
 
@@ -80,11 +108,13 @@ isc_component_lib_dir() {
 isc_activate_components() {
   local dir
   dir="$(isc_component_lib_dir)" || {
+    isc_log_error "could not resolve installer component framework (${ISC_FUNCTIONS_REPO})"
     echo "ERROR: could not resolve installer component framework (${ISC_FUNCTIONS_REPO})." >&2
     echo "       Clone ${ISC_FUNCTIONS_REPO} next to this repo, set ISC_FUNCTIONS_DIR, or enable network access." >&2
     return 1
   }
   export ISC_COMPONENT_LIB_DIR="$dir"
+  isc_log_info "activating component runtime from $dir"
   # shellcheck source=/dev/null
   source "$dir/component_runtime.sh"
 }
@@ -99,10 +129,12 @@ isc_load_menu() {
   declare -F cm_aggregate_menu >/dev/null 2>&1 && return 0
   local dir
   dir="$(isc_component_lib_dir)" || {
+    isc_log_error "could not resolve installer component framework for menu (${ISC_FUNCTIONS_REPO})"
     echo "ERROR: could not resolve installer component framework (${ISC_FUNCTIONS_REPO})." >&2
     return 1
   }
   export ISC_COMPONENT_LIB_DIR="$dir"
+  isc_log_info "loading menu engine from $dir"
   # shellcheck source=/dev/null
   source "$dir/component_menu.sh"
 }

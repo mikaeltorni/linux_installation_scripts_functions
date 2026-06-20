@@ -35,6 +35,26 @@ if [[ -n "${CM_MENU_SOURCED:-}" ]]; then
 fi
 CM_MENU_SOURCED=1
 
+# Ensure the centralized logging helpers exist. Source component_logging.sh from
+# next to this engine when present, otherwise define silent no-op stubs so every
+# isc_log* call below is always safe and never corrupts the TUI on the terminal.
+if ! declare -F isc_log >/dev/null 2>&1; then
+  _cm_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _cm_dir=""
+  if [[ -n "$_cm_dir" && -f "$_cm_dir/component_logging.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$_cm_dir/component_logging.sh"
+  fi
+  unset _cm_dir
+fi
+if ! declare -F isc_log >/dev/null 2>&1; then
+  isc_log()         { :; }
+  isc_log_verbose() { :; }
+  isc_log_debug()   { :; }
+  isc_log_info()    { :; }
+  isc_log_warn()    { :; }
+  isc_log_error()   { :; }
+fi
+
 # Associative state shared with callers. Declared here so sourcing alone makes
 # them available; callers may also declare them, which is harmless.
 declare -gA CM_REPO_LABEL CM_REPO_ENABLED CM_COMP_IDS CM_COMP_LABEL CM_COMP_ON 2>/dev/null || true
@@ -203,6 +223,7 @@ cm_submenu_loop() {
 #   0 when the user accepted (install), 1 when cancelled.
 cm_single_submenu() {
   local repo="$1"
+  isc_log_debug "opening standalone submenu for repo '$repo'"
   cm_hide_cursor
   trap 'cm_show_cursor' RETURN
   cm_submenu_loop "$repo" standalone
@@ -210,6 +231,7 @@ cm_single_submenu() {
   cm_show_cursor
   cm_clear
   trap - RETURN
+  isc_log_debug "standalone submenu for repo '$repo' closed with rc=$rc"
   return $rc
 }
 
@@ -254,6 +276,7 @@ cm_render_aggregate() {
 #   0 when the user accepted the selection (ENTER); 1 when cancelled (q/Esc).
 cm_aggregate_menu() {
   local sel=0 key repo
+  isc_log_debug "opening aggregate menu with ${#CM_REPOS[@]} repo row(s)"
   cm_hide_cursor
   while true; do
     (( sel < 0 )) && sel=0
@@ -279,10 +302,12 @@ cm_aggregate_menu() {
         cm_submenu_loop "$repo" embedded
         ;;
       ENTER)
+        isc_log_info "aggregate menu accepted"
         cm_show_cursor; cm_clear
         return 0
         ;;
       ESC|QUIT)
+        isc_log_info "aggregate menu cancelled"
         cm_show_cursor; cm_clear
         return 1
         ;;

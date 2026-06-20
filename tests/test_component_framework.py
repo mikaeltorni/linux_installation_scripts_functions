@@ -49,7 +49,12 @@ def run(args):
 
 def test_framework_files_exist():
     """The framework files should exist in the repository root."""
-    for name in ("component_menu.sh", "component_runtime.sh", "component_loader.sh"):
+    for name in (
+        "component_menu.sh",
+        "component_runtime.sh",
+        "component_loader.sh",
+        "component_logging.sh",
+    ):
         assert (REPO / name).is_file(), f"missing {name}"
 
 
@@ -112,6 +117,48 @@ printf '%s/%s\\n' "$(cm_repo_on_count r)" "$(cm_repo_total_count r)"
     assert result.stdout.strip() == "2/4"
 
 
+def test_logging_writes_leveled_lines_to_log_dir():
+    """isc_log should write timestamped, leveled, tagged lines into ISC_LOG_DIR."""
+    with tempfile.TemporaryDirectory() as tmp:
+        logdir = Path(tmp) / ".log"
+        script = f"""
+set -uo pipefail
+export ISC_LOG_DIR="{logdir}"
+export ISC_LOG_TAG="demo"
+source "{REPO}/component_logging.sh"
+isc_log_info "hello world"
+isc_log_error "boom happened"
+printf 'file:%s\\n' "$(isc_log_file)"
+"""
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        log_file = logdir / "installer_components.log"
+        assert log_file.is_file(), result.stdout
+        text = log_file.read_text()
+        assert "[INFO" in text and "hello world" in text
+        assert "[ERROR" in text and "boom happened" in text
+        assert "[demo]" in text
+
+
+def test_logging_respects_level_threshold():
+    """Messages below ISC_LOG_LEVEL should be dropped, higher ones recorded."""
+    with tempfile.TemporaryDirectory() as tmp:
+        logdir = Path(tmp) / ".log"
+        script = f"""
+set -uo pipefail
+export ISC_LOG_DIR="{logdir}"
+export ISC_LOG_LEVEL="warn"
+source "{REPO}/component_logging.sh"
+isc_log_debug "should-not-appear"
+isc_log_warn "should-appear"
+"""
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        text = (logdir / "installer_components.log").read_text()
+        assert "should-appear" in text
+        assert "should-not-appear" not in text
+
+
 def test_loader_resolves_sibling_checkout():
     """isc_activate_components should find the framework via a sibling checkout."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -119,7 +166,12 @@ def test_loader_resolves_sibling_checkout():
         # Sibling layout: base/linux_installation_scripts_functions + base/consumer
         sib = base / "linux_installation_scripts_functions"
         sib.mkdir()
-        for name in ("component_menu.sh", "component_runtime.sh", "component_loader.sh"):
+        for name in (
+            "component_menu.sh",
+            "component_runtime.sh",
+            "component_loader.sh",
+            "component_logging.sh",
+        ):
             (sib / name).write_text((REPO / name).read_text())
         consumer = base / "consumer"
         consumer.mkdir()
