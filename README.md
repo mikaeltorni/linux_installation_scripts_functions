@@ -7,6 +7,16 @@ the interactive installer component-selection framework. The master installer
 and every standalone repository installer load these files instead of vendoring
 their own copies, so a change here updates all of them at once.
 
+## Repository dependencies
+
+This repository **is** the shared installer component framework, so it depends
+on no other setup repository. Every component-aware installer in the chain
+depends on *it* — loaded from a sibling checkout when present, otherwise
+downloaded on demand — so a missing checkout never blocks an installation.
+
+See the full cross-repository map in
+[installation_scripts/DEPENDENCIES.md](https://github.com/mikaeltorni/installation_scripts/blob/master/DEPENDENCIES.md).
+
 ## What's here
 
 | File | Purpose |
