@@ -48,8 +48,14 @@ fi
 # Manifest accessors
 ###############################################################################
 
-# Echo the field at index $2 (0-based) of manifest entry for id $1.
-# Fields: 0=id 1=label 2=default 3=function.
+# Echo the field at index $2 (0-based) of the manifest entry for id $1.
+#
+# Arguments:
+#   $1 - component id to look up.
+#   $2 - field index: 0=id, 1=label, 2=default, 3=function.
+#
+# Returns:
+#   0 and prints the requested field when the id exists; 1 when no entry matches.
 _isc_field() {
   local want_id="$1" field="$2" entry id label def fn
   for entry in "${ISC_COMPONENTS[@]}"; do
@@ -67,7 +73,13 @@ _isc_field() {
   return 1
 }
 
-# Echo all component ids in manifest order.
+# Echo all component ids in manifest order, one per line.
+#
+# Arguments:
+#   none (reads the ISC_COMPONENTS manifest).
+#
+# Returns:
+#   0; prints every component id on its own line.
 _isc_all_ids() {
   local entry id rest
   for entry in "${ISC_COMPONENTS[@]}"; do
@@ -76,7 +88,13 @@ _isc_all_ids() {
   done
 }
 
-# Echo the ids whose default field is "on", in manifest order.
+# Echo the ids whose default field is "on", in manifest order, one per line.
+#
+# Arguments:
+#   none (reads the ISC_COMPONENTS manifest).
+#
+# Returns:
+#   0; prints each default-on component id on its own line.
 _isc_default_ids() {
   local entry id label def rest
   for entry in "${ISC_COMPONENTS[@]}"; do
@@ -91,6 +109,12 @@ _isc_default_ids() {
 
 # Print "id<TAB>label<TAB>default" for every component. Consumed by the master
 # installer to build the aggregate menu without sourcing repo internals.
+#
+# Arguments:
+#   none (reads the ISC_COMPONENTS manifest).
+#
+# Returns:
+#   0; prints one tab-separated line per component.
 _isc_list_components() {
   local entry id label def rest
   for entry in "${ISC_COMPONENTS[@]}"; do

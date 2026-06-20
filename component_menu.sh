@@ -87,6 +87,12 @@ cm_read_key() {
 ###############################################################################
 
 # Echo the number of enabled components for a repo.
+#
+# Arguments:
+#   $1 - repo id whose enabled components are counted.
+#
+# Returns:
+#   0; prints the count of components with CM_COMP_ON set to 1.
 cm_repo_on_count() {
   local repo="$1" id count=0
   for id in ${CM_COMP_IDS[$repo]:-}; do
@@ -96,6 +102,12 @@ cm_repo_on_count() {
 }
 
 # Echo the total number of components for a repo.
+#
+# Arguments:
+#   $1 - repo id whose components are counted.
+#
+# Returns:
+#   0; prints the total number of component ids registered for the repo.
 cm_repo_total_count() {
   local repo="$1" id count=0
   for id in ${CM_COMP_IDS[$repo]:-}; do count=$((count + 1)); done
