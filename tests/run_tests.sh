@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo "Syntax-checking shell sources..."
-bash -n "$ROOT_DIR"/component_logging.sh "$ROOT_DIR"/component_menu.sh "$ROOT_DIR"/component_runtime.sh "$ROOT_DIR"/component_loader.sh
+bash -n "$ROOT_DIR"/component_logging.sh "$ROOT_DIR"/component_menu.sh "$ROOT_DIR"/component_runtime.sh "$ROOT_DIR"/component_loader.sh "$ROOT_DIR"/installer_helpers.sh
 echo "  OK"
 
 fail=0

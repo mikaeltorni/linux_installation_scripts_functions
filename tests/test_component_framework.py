@@ -54,6 +54,7 @@ def test_framework_files_exist():
         "component_runtime.sh",
         "component_loader.sh",
         "component_logging.sh",
+        "installer_helpers.sh",
     ):
         assert (REPO / name).is_file(), f"missing {name}"
 
@@ -194,6 +195,53 @@ echo "libdir:$ISC_COMPONENT_LIB_DIR"
     assert result.returncode == 0, result.stderr
     assert "runtime:ok" in result.stdout, result.stdout
     assert str(sib) in result.stdout, result.stdout
+
+
+def test_installer_helpers_use_root_optional_run_as_target():
+    """The shared run_as_target must avoid unconditional sudo (sudo-free path)."""
+    source = (REPO / "installer_helpers.sh").read_text()
+    # Same-user branch runs without sudo; only a differing user escalates.
+    assert 'if [ "$(id -un)" = "$TARGET_USER" ]; then' in source
+    assert "sudo -H -u" in source
+    for fn in ("run_as_target()", "msg()", "need_cmd()", "apt_install()", "ensure_session_bus()"):
+        assert fn in source, f"missing {fn}"
+
+
+def test_loader_sources_shared_helpers_from_sibling():
+    """isc_load_helpers should make run_as_target/msg available from a sibling."""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        sib = base / "linux_installation_scripts_functions"
+        sib.mkdir()
+        for name in (
+            "component_menu.sh",
+            "component_runtime.sh",
+            "component_loader.sh",
+            "component_logging.sh",
+            "installer_helpers.sh",
+        ):
+            (sib / name).write_text((REPO / name).read_text())
+        consumer = base / "consumer"
+        consumer.mkdir()
+        script = f"""
+set -uo pipefail
+SCRIPT_DIR="{consumer}"
+TARGET_USER="$(id -un)"; TARGET_HOME="$HOME"
+RUNTIME_DIR="/run/user/$(id -u)"; USER_BUS="unix:path=$RUNTIME_DIR/bus"; DISPLAY_VAL=":0"
+source "{sib}/component_loader.sh"
+isc_load_helpers
+declare -F run_as_target >/dev/null && echo "helpers:ok"
+run_as_target id -un
+"""
+        result = subprocess.run(
+            ["bash", "-c", script],
+            cwd=consumer,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(base / "nohome")},
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode == 0, result.stderr
+    assert "helpers:ok" in result.stdout, result.stdout
 
 
 if __name__ == "__main__":
