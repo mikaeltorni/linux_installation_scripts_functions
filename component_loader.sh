@@ -77,9 +77,10 @@ isc_component_lib_dir() {
 
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/installation_scripts/components"
   mkdir -p "$cache" 2>/dev/null || { isc_log_error "cannot create cache dir: $cache"; return 1; }
-  # component_logging.sh is downloaded opportunistically (it is not part of the
-  # existence gate above) so older checkouts without it still resolve.
-  for f in component_logging.sh component_menu.sh component_runtime.sh; do
+  # component_logging.sh and installer_helpers.sh are downloaded opportunistically
+  # (they are not part of the existence gate above) so older checkouts without
+  # them still resolve.
+  for f in component_logging.sh installer_helpers.sh component_menu.sh component_runtime.sh; do
     if [[ ! -f "$cache/$f" || "${ISC_FUNCTIONS_REFRESH:-0}" == "1" ]]; then
       isc_log_debug "downloading $f from $ISC_FUNCTIONS_RAW"
       if command -v curl >/dev/null 2>&1; then
@@ -117,6 +118,34 @@ isc_activate_components() {
   isc_log_info "activating component runtime from $dir"
   # shellcheck source=/dev/null
   source "$dir/component_runtime.sh"
+}
+
+# isc_load_helpers - resolve the framework and source installer_helpers.sh so the
+# shared install-time helpers (run_as_target, msg, need_cmd, apt_install, …)
+# become available. Consuming installers call this from install.sh before doing
+# any target-user work, instead of defining their own copies. Idempotent.
+#
+# Returns:
+#   0 on success; non-zero (with an error message) when the helpers could not be
+#   loaded.
+isc_load_helpers() {
+  declare -F run_as_target >/dev/null 2>&1 && [[ -n "${ISC_HELPERS_SOURCED:-}" ]] && return 0
+  local dir
+  dir="$(isc_component_lib_dir)" || {
+    isc_log_error "could not resolve installer helpers (${ISC_FUNCTIONS_REPO})"
+    echo "ERROR: could not resolve installer helpers (${ISC_FUNCTIONS_REPO})." >&2
+    echo "       Clone ${ISC_FUNCTIONS_REPO} next to this repo, set ISC_FUNCTIONS_DIR, or enable network access." >&2
+    return 1
+  }
+  export ISC_COMPONENT_LIB_DIR="$dir"
+  if [[ ! -f "$dir/installer_helpers.sh" ]]; then
+    isc_log_error "installer_helpers.sh missing from resolved framework dir: $dir"
+    echo "ERROR: installer_helpers.sh missing from ${ISC_FUNCTIONS_REPO}." >&2
+    return 1
+  fi
+  isc_log_info "loading installer helpers from $dir"
+  # shellcheck source=/dev/null
+  source "$dir/installer_helpers.sh"
 }
 
 # isc_load_menu - source only the TUI engine (component_menu.sh). The master
