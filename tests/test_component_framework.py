@@ -9,10 +9,15 @@ state changes.
 """
 
 import subprocess
+import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from logging_utils import get_logger, log_call
 
 HARNESS = f"""
 set -uo pipefail
@@ -242,6 +247,34 @@ run_as_target id -un
         )
     assert result.returncode == 0, result.stderr
     assert "helpers:ok" in result.stdout, result.stdout
+
+
+def test_python_logging_get_logger_is_idempotent():
+    """get_logger should attach one best-effort handler per logger name."""
+    name = f"component-framework-test-{uuid.uuid4()}"
+    logger = get_logger(name, "python_logging_tests.log")
+    again = get_logger(name, "python_logging_tests.log")
+    assert logger is again
+    assert len(logger.handlers) == 1
+    logger.info("idempotent logger test")
+    log_file = REPO / ".log" / "python_logging_tests.log"
+    assert log_file.is_file()
+    assert "idempotent logger test" in log_file.read_text()
+
+
+def test_python_log_call_records_arguments_and_return_value():
+    """log_call should record ENTER args and EXIT return value."""
+    name = f"component-framework-trace-test-{uuid.uuid4()}"
+    logger = get_logger(name, "python_trace_tests.log")
+
+    @log_call(logger)
+    def combine(prefix, count=1):
+        return f"{prefix}:{count}"
+
+    assert combine("alpha", count=3) == "alpha:3"
+    text = (REPO / ".log" / "python_trace_tests.log").read_text()
+    assert "ENTER test_component_framework.py:test_python_log_call_records_arguments_and_return_value.<locals>.combine(prefix='alpha', count=3)" in text
+    assert "EXIT test_component_framework.py:test_python_log_call_records_arguments_and_return_value.<locals>.combine -> 'alpha:3'" in text
 
 
 if __name__ == "__main__":
