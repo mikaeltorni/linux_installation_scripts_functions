@@ -208,8 +208,39 @@ def test_installer_helpers_use_root_optional_run_as_target():
     # Same-user branch runs without sudo; only a differing user escalates.
     assert 'if [ "$(id -un)" = "$TARGET_USER" ]; then' in source
     assert "sudo -H -u" in source
+    assert 'source "$_isc_helpers_dir/component_logging.sh"' in source
     for fn in ("run_as_target()", "msg()", "need_cmd()", "apt_install()", "ensure_session_bus()"):
         assert fn in source, f"missing {fn}"
+
+
+def test_installer_helpers_route_internal_logs_through_isc_api():
+    """installer_helpers should keep log() only as a compatibility alias."""
+    source = (REPO / "installer_helpers.sh").read_text()
+    body_after_bootstrap = source.split("# msg - Print", maxsplit=1)[1]
+    assert 'log "' not in body_after_bootstrap
+    assert "log() { isc_log" in source
+    assert "isc_log_warn" in body_after_bootstrap
+
+
+def test_installer_helpers_log_sudo_deferrals_to_shared_log():
+    """Root-optional helper deferrals should be observable in the shared log."""
+    with tempfile.TemporaryDirectory() as tmp:
+        logdir = Path(tmp) / ".log"
+        script = f"""
+set -uo pipefail
+export ISC_LOG_DIR="{logdir}"
+export ISC_LOG_TAG="helpers"
+source "{REPO}/installer_helpers.sh"
+note_sudo_required "install demo package"
+report_sudo_required
+"""
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert "SKIP (requires sudo): install demo package" in result.stdout
+        text = (logdir / "installer_components.log").read_text()
+        assert "[WARN" in text
+        assert "root-only step deferred: install demo package" in text
+        assert "root-only steps still pending: install demo package" in text
 
 
 def test_loader_sources_shared_helpers_from_sibling():

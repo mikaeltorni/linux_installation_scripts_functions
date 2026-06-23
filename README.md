@@ -25,6 +25,7 @@ See the full cross-repository map in
 | `component_runtime.sh` | The per-repository installer contract: `--list-components`, `--select id,…`, `--default`, `--all`, an interactive submenu, and optional `ISC_PREFLIGHT` / `ISC_POSTFLIGHT` hooks. |
 | `component_loader.sh` | Resolves and activates the framework from a sibling checkout or by downloading it; exposes `isc_activate_components`. |
 | `component_logging.sh` | Centralized, dependency-free leveled logging (`verbose`/`debug`/`info`/`warn`/`error`) written to a per-repository `.log/` file with timestamps and a context tag. Sourced automatically by the loader, runtime, and menu; degrades to silent no-ops when absent. |
+| `installer_helpers.sh` | Shared install-time helpers (`run_as_target`, `msg`, `need_cmd`, `apt_install`, session-bus/root guards, and sudo-deferral reporting) loaded through `isc_load_helpers`; uses the same best-effort file logger. |
 | `logging_utils.py` | Centralized Python logging helper for repository maintenance scripts and tests; provides idempotent `.log/` file logging and the standard `log_call` tracing decorator. |
 
 ## How a repository uses it
