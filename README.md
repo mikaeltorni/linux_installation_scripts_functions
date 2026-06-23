@@ -1,5 +1,7 @@
 # linux_installation_scripts_functions
 
+> Part of [installation_scripts](https://github.com/mikaeltorni/installation_scripts) — the shared, pure-Bash installer component-selection framework for the Ubuntu 24.04 desktop setup chain. Tested on Ubuntu 24.04.4 LTS; the Bash framework is portable to any system with Bash 4+ (macOS/WSL untested).
+
 Shared, reusable installer functions for the
 [`installation_scripts`](https://github.com/mikaeltorni/installation_scripts)
 Ubuntu desktop setup chain. This repository is the **single source of truth** for
