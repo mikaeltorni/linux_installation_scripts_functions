@@ -29,6 +29,49 @@ See the full cross-repository map in
 | `component_logging.sh` | Centralized, dependency-free leveled logging (`verbose`/`debug`/`info`/`warn`/`error`) written to a per-repository `.log/` file with timestamps and a context tag. Sourced automatically by the loader, runtime, and menu; degrades to silent no-ops when absent. |
 | `installer_helpers.sh` | Shared install-time helpers (`run_as_target`, `msg`, `need_cmd`, `apt_install`, session-bus/root guards, and sudo-deferral reporting) loaded through `isc_load_helpers`; uses the same best-effort file logger. |
 | `logging_utils.py` | Centralized Python logging helper for repository maintenance scripts and tests; provides idempotent `.log/` file logging and the standard `log_call` tracing decorator. |
+| `install.sh` | Component-based installer that deploys this framework as selectable modules (core always installed; menu/runtime/helpers optional, default-on). |
+| `installer/components.sh` | This repository's optional-module manifest consumed by the shared runtime. |
+| `lib/framework_install.sh` | The deploy functions (`isc_install_core` and one per optional module) invoked by `install.sh`. |
+
+## Installing this repository as modules
+
+Like every other repository in the chain, this one ships a component-based
+`install.sh` that deploys its features as selectable, installable modules. It
+copies the framework into a stable, network-independent location (by default the
+loader's offline download cache,
+`${XDG_CACHE_HOME:-$HOME/.cache}/installation_scripts/components`; override with
+`ISC_INSTALL_DIR`) so a consuming installer can resolve the framework even with
+no source checkout present.
+
+```bash
+bash install.sh                  # interactive submenu on a TTY, else defaults
+bash install.sh --default        # core + all default-on modules, no prompts
+bash install.sh --all            # core + every module, no prompts
+bash install.sh --select menu    # core + exactly these module ids
+bash install.sh --list-components  # print: id<TAB>label<TAB>default
+```
+
+**Core (always installed, never deselectable).** Installed unconditionally so
+the framework core works no matter which optional modules are chosen:
+
+| File | Why it is core |
+|---|---|
+| `component_loader.sh` | The bootstrap/resolver — without it nothing can locate the framework. |
+| `component_logging.sh` | Shared Bash leveled file logger (logging is required). |
+| `logging_utils.py` | Shared Python logging helper (logging is required). |
+
+**Optional modules (default-on, fully customizable).** Each is one selectable
+component in `installer/components.sh`:
+
+| Component id | File | Purpose |
+|---|---|---|
+| `menu` | `component_menu.sh` | Interactive two-level selection menu engine. |
+| `runtime` | `component_runtime.sh` | Per-repository `--list-components`/`--select`/`--default`/`--all` contract. |
+| `installer_helpers` | `installer_helpers.sh` | Shared install-time helpers (`run_as_target`, `apt_install`, …). |
+
+Deselecting an optional module only means that file is not deployed locally; a
+consuming installer still fetches it on demand through `component_loader.sh`, so
+nothing breaks — the core always resolves and the rest downloads when needed.
 
 ## How a repository uses it
 
