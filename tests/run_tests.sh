@@ -10,6 +10,7 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo "Syntax-checking shell sources..."
 bash -n "$ROOT_DIR"/component_logging.sh "$ROOT_DIR"/component_menu.sh "$ROOT_DIR"/component_runtime.sh "$ROOT_DIR"/component_loader.sh "$ROOT_DIR"/installer_helpers.sh
+bash -n "$ROOT_DIR"/install.sh "$ROOT_DIR"/lib/framework_install.sh "$ROOT_DIR"/installer/components.sh
 echo "  OK"
 
 fail=0
