@@ -21,13 +21,19 @@
 #                           markers and the reconfigure/uninstall actions)
 #   CM_COMP_UNINSTALL[repo|id] - 1 when the user marked an installed component
 #                           for removal with the [u] key (optional)
+#   CM_COMP_FAVORITE_ELIGIBLE[repo|id] - 1 when a component can be pinned as a
+#                           GNOME favourite app from the program menu
+#   CM_COMP_FAVORITE_ON[repo|id] - 1 when the component should be included in
+#                           the generated favourite-apps list
 #
 # Per-component states shown in the checklist:
 #   [ ] absent, will be skipped          [x] absent, will be installed
 #   [✓] installed, left as-is            [~] installed, will be reconfigured
 #   [✗] installed, will be uninstalled
-# SPACE toggles install/reconfigure, [u] toggles uninstall of an installed
-# component, and [r] marks every installed component for reconfigure.
+#   [F] app component selected for dock favourites
+# SPACE toggles install/reconfigure, [f] toggles dock favourite selection for
+# eligible app components, [u] toggles uninstall of an installed component, and
+# [r] marks every installed component for reconfigure.
 #
 # Entry points (all mutate the arrays in place):
 #   cm_aggregate_menu     - two-level menu: rows are repos; SPACE enables or
@@ -71,6 +77,7 @@ fi
 # them available; callers may also declare them, which is harmless.
 declare -gA CM_REPO_LABEL CM_REPO_ENABLED CM_COMP_IDS CM_COMP_LABEL CM_COMP_ON 2>/dev/null || true
 declare -gA CM_COMP_INSTALLED CM_COMP_UNINSTALL 2>/dev/null || true
+declare -gA CM_COMP_FAVORITE_ELIGIBLE CM_COMP_FAVORITE_ON 2>/dev/null || true
 declare -ga CM_REPOS 2>/dev/null || true
 
 ###############################################################################
@@ -88,7 +95,7 @@ cm_clear() { printf '\033[2J\033[H'; }
 
 # Read a single keypress and echo a normalized token.
 #
-# Returns one of: UP DOWN LEFT RIGHT SPACE ENTER ESC QUIT ALL NONE OTHER.
+# Returns one of: UP DOWN LEFT RIGHT SPACE ENTER ESC QUIT ALL NONE FAVORITE OTHER.
 cm_read_key() {
   local key rest
   IFS= read -rsn1 key 2>/dev/null || { echo QUIT; return; }
@@ -111,6 +118,7 @@ cm_read_key() {
     q|Q) echo QUIT ;;
     a|A) echo ALL ;;
     n|N) echo NONE ;;
+    f|F) echo FAVORITE ;;
     u|U) echo UNINSTALL ;;
     r|R) echo RECONFIG ;;
     *)   echo OTHER ;;
@@ -196,10 +204,17 @@ cm_render_submenu() {
     if [[ "$i" == "$sel" ]]; then mark='\033[36m›\033[0m'; else mark=' '; fi
     label="${CM_COMP_LABEL[$repo|$id]:-$id}"
     tag=''
-    if [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]]; then
-      if [[ "${CM_COMP_UNINSTALL[$repo|$id]:-0}" == "1" ]]; then
-        box='[\033[31m✗\033[0m]'; tag=' \033[31m(uninstall)\033[0m'
-      elif [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then
+    if [[ "${CM_COMP_UNINSTALL[$repo|$id]:-0}" == "1" ]]; then
+      box='[\033[31m✗\033[0m]'; tag=' \033[31m(uninstall)\033[0m'
+    elif [[ "${CM_COMP_FAVORITE_ON[$repo|$id]:-0}" == "1" ]]; then
+      box='[\033[36mF\033[0m]'
+      if [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]]; then
+        tag=' \033[2m(installed, favourite)\033[0m'
+      else
+        tag=' \033[36m(favourite)\033[0m'
+      fi
+    elif [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]]; then
+      if [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then
         box='[\033[33m~\033[0m]'; tag=' \033[33m(reconfigure)\033[0m'
       else
         box='[\033[32m✓\033[0m]'; tag=' \033[2m(installed)\033[0m'
@@ -227,9 +242,9 @@ cm_submenu_loop() {
   local sel=0 key id title footer
   title="Configure components"
   if [[ "$mode" == "standalone" ]]; then
-    footer="[↑/↓] move  [space] toggle  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [enter] apply  [q] cancel"
+    footer="[↑/↓] move  [space] toggle  [f] favourite  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [enter] apply  [q] cancel"
   else
-    footer="[↑/↓] move  [space] toggle  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [←/enter] back"
+    footer="[↑/↓] move  [space] toggle  [f] favourite  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [←/enter] back"
   fi
   while true; do
     (( sel < 0 )) && sel=0
@@ -262,6 +277,18 @@ cm_submenu_loop() {
         else
           CM_COMP_UNINSTALL[$repo|$id]=1
           CM_COMP_ON[$repo|$id]=0
+          CM_COMP_FAVORITE_ON[$repo|$id]=0
+        fi
+        ;;
+      FAVORITE)
+        id="${ids[$sel]:-}"
+        [[ -z "$id" ]] && continue
+        [[ "${CM_COMP_FAVORITE_ELIGIBLE[$repo|$id]:-0}" == "1" ]] || continue
+        CM_COMP_UNINSTALL[$repo|$id]=0
+        if [[ "${CM_COMP_FAVORITE_ON[$repo|$id]:-0}" == "1" ]]; then
+          CM_COMP_FAVORITE_ON[$repo|$id]=0
+        else
+          CM_COMP_FAVORITE_ON[$repo|$id]=1
         fi
         ;;
       RECONFIG)

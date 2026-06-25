@@ -148,7 +148,9 @@ bash install.sh --detect         # print: id<TAB>installed|absent
 
 In the interactive submenu, already-installed components show a `✓`; `space`
 selects an installed component for **reconfigure** (`~`), `[u]` marks it for
-**uninstall** (`✗`), and `[r]` marks every installed component for reconfigure.
+**uninstall** (`✗`), `[r]` marks every installed component for reconfigure, and
+`[f]` toggles GNOME dock favourite selection for app components that expose
+favourite metadata. Favourite-selected rows show `F` instead of `x`.
 
 ## Resolution order
 

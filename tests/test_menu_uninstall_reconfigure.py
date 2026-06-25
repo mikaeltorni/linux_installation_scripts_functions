@@ -20,6 +20,7 @@ KEYS = {
     "SPACE": " ",
     "U": "u",
     "R": "r",
+    "F": "f",
     "ENTER": "\n",
     "Q": "q",
 }
@@ -48,10 +49,15 @@ CM_COMP_ON[$repo|alpha]=0
 CM_COMP_ON[$repo|beta]=1
 CM_COMP_UNINSTALL[$repo|alpha]=0
 CM_COMP_UNINSTALL[$repo|beta]=0
+CM_COMP_FAVORITE_ELIGIBLE[$repo|alpha]=1
+CM_COMP_FAVORITE_ELIGIBLE[$repo|beta]=1
+CM_COMP_FAVORITE_ON[$repo|alpha]=0
+CM_COMP_FAVORITE_ON[$repo|beta]=1
 cm_single_submenu "$repo" >/dev/null 2>&1
 for id in alpha beta; do
   printf '%s.on=%s\\n' "$id" "${{CM_COMP_ON[$repo|$id]:-}}"
   printf '%s.uninstall=%s\\n' "$id" "${{CM_COMP_UNINSTALL[$repo|$id]:-}}"
+  printf '%s.favorite=%s\\n' "$id" "${{CM_COMP_FAVORITE_ON[$repo|$id]:-}}"
 done
 """
     result = subprocess.run(
@@ -74,11 +80,12 @@ def test_space_reconfigures_installed_component():
 
 
 def test_u_marks_installed_for_uninstall_and_clears_apply():
-    """[u] on alpha marks uninstall and clears any apply selection."""
+    """[u] on alpha marks uninstall and clears apply/favourite selection."""
     # SPACE first selects reconfigure, then U must flip to uninstall.
-    state = drive(["SPACE", "U", "ENTER"])
+    state = drive(["F", "SPACE", "U", "ENTER"])
     assert state["alpha.uninstall"] == "1"
     assert state["alpha.on"] == "0"
+    assert state["alpha.favorite"] == "0"
 
 
 def test_u_is_ignored_for_absent_component():
@@ -94,6 +101,21 @@ def test_reconfigure_all_selects_only_installed():
     # beta started on=1 (absent default) and [r] must not touch it.
     assert state["beta.on"] == "1"
     assert state["beta.uninstall"] == "0"
+
+
+def test_f_toggles_favorite_without_changing_install_selection():
+    """[f] toggles dock favourite selection independently of install state."""
+    state = drive(["F", "ENTER"])
+    assert state["alpha.favorite"] == "1"
+    assert state["alpha.on"] == "0"
+    assert state["alpha.uninstall"] == "0"
+
+
+def test_f_toggles_existing_favorite_off():
+    """[f] can remove the favourite marker from an absent selected component."""
+    state = drive(["DOWN", "F", "ENTER"])
+    assert state["beta.favorite"] == "0"
+    assert state["beta.on"] == "1"
 
 
 if __name__ == "__main__":
