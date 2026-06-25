@@ -146,6 +146,10 @@ bash install.sh --list-components  # print: id<TAB>label<TAB>default
 bash install.sh --detect         # print: id<TAB>installed|absent
 ```
 
+In the interactive submenu, already-installed components show a `✓`; `space`
+selects an installed component for **reconfigure** (`~`), `[u]` marks it for
+**uninstall** (`✗`), and `[r]` marks every installed component for reconfigure.
+
 ## Resolution order
 
 `isc_activate_components` looks for the framework in this order:

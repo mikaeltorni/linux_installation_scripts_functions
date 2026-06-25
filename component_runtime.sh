@@ -454,16 +454,35 @@ _isc_interactive_select() {
     [[ -z "$id" ]] && continue
     ids+="$id "
     CM_COMP_LABEL[$repo|$id]="$(_isc_field "$id" 1)"
-    def="$(_isc_field "$id" 2)"
-    [[ "$def" == "on" ]] && CM_COMP_ON[$repo|$id]=1 || CM_COMP_ON[$repo|$id]=0
+    CM_COMP_UNINSTALL[$repo|$id]=0
+    # Reflect live install state so the menu can show installed/reconfigure
+    # markers and offer uninstall. Already-installed components default to
+    # "leave as-is" (off) so a re-run never silently re-applies them; absent
+    # components default to the manifest's default-on flag.
+    if _isc_is_installed "$id"; then
+      CM_COMP_INSTALLED[$repo|$id]=1
+      CM_COMP_ON[$repo|$id]=0
+    else
+      CM_COMP_INSTALLED[$repo|$id]=0
+      def="$(_isc_field "$id" 2)"
+      [[ "$def" == "on" ]] && CM_COMP_ON[$repo|$id]=1 || CM_COMP_ON[$repo|$id]=0
+    fi
   done < <(_isc_all_ids)
   CM_COMP_IDS[$repo]="${ids% }"
 
   if cm_single_submenu "$repo"; then
     isc_log_info "interactive selection accepted for repo '$repo'"
+    ISC_SELECTED_APPLY=""
+    ISC_SELECTED_UNINSTALL=""
     for id in ${CM_COMP_IDS[$repo]}; do
-      [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]] && printf '%s\n' "$id"
+      if [[ "${CM_COMP_UNINSTALL[$repo|$id]:-0}" == "1" ]]; then
+        ISC_SELECTED_UNINSTALL+="$id "
+      elif [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then
+        ISC_SELECTED_APPLY+="$id "
+      fi
     done
+    ISC_SELECTED_APPLY="${ISC_SELECTED_APPLY% }"
+    ISC_SELECTED_UNINSTALL="${ISC_SELECTED_UNINSTALL% }"
     return 0
   fi
   isc_log_info "interactive selection cancelled for repo '$repo'"
@@ -520,19 +539,32 @@ component_main() {
       # No mode requested. Use the interactive submenu on a real terminal,
       # otherwise fall back to the default-on set so piped/automated runs work.
       if [[ -t 0 && -t 1 ]]; then
-        local chosen rc
-        chosen="$(_isc_interactive_select)"; rc=$?
+        local rc apply_rc=0 uninstall_rc=0
+        # Run in-process (no command substitution) so the menu's selection
+        # arrays and the resolved apply/uninstall lists survive.
+        ISC_SELECTED_APPLY=""; ISC_SELECTED_UNINSTALL=""
+        _isc_interactive_select >/dev/null; rc=$?
         if (( rc == 2 )); then
           isc_log_info "interactive menu unavailable — installing default components"
           msg "Interactive menu unavailable — installing default components."
           _isc_run_selected "$(_isc_default_ids)"; return $?
         fi
         if (( rc != 0 )); then
-          isc_log_info "selection cancelled — nothing installed"
-          msg "Selection cancelled — nothing installed."
+          isc_log_info "selection cancelled — nothing changed"
+          msg "Selection cancelled — nothing changed."
           return 0
         fi
-        _isc_run_selected "$chosen"; return $?
+        # Uninstall removals first, then apply installs/reconfigures.
+        if [[ -n "${ISC_SELECTED_UNINSTALL:-}" ]]; then
+          _isc_uninstall_selected "$ISC_SELECTED_UNINSTALL" || uninstall_rc=$?
+        fi
+        if [[ -n "${ISC_SELECTED_APPLY:-}" ]]; then
+          _isc_run_selected "$ISC_SELECTED_APPLY" || apply_rc=$?
+        elif [[ -z "${ISC_SELECTED_UNINSTALL:-}" ]]; then
+          msg "[$ISC_REPO_NAME] No components selected — nothing to do."
+        fi
+        (( apply_rc != 0 || uninstall_rc != 0 )) && return 1
+        return 0
       else
         isc_log_info "no TTY — installing default components non-interactively"
         _isc_run_selected "$(_isc_default_ids)"; return $?

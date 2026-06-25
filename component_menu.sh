@@ -16,6 +16,18 @@
 #   CM_COMP_IDS[repo]     - space-separated component ids belonging to a repo
 #   CM_COMP_LABEL[repo|id]- human label for a component
 #   CM_COMP_ON[repo|id]   - 1 when that component is selected, 0 otherwise
+#   CM_COMP_INSTALLED[repo|id] - 1 when already installed on this machine
+#                           (optional; defaults to 0 — drives the install-state
+#                           markers and the reconfigure/uninstall actions)
+#   CM_COMP_UNINSTALL[repo|id] - 1 when the user marked an installed component
+#                           for removal with the [u] key (optional)
+#
+# Per-component states shown in the checklist:
+#   [ ] absent, will be skipped          [x] absent, will be installed
+#   [✓] installed, left as-is            [~] installed, will be reconfigured
+#   [✗] installed, will be uninstalled
+# SPACE toggles install/reconfigure, [u] toggles uninstall of an installed
+# component, and [r] marks every installed component for reconfigure.
 #
 # Entry points (all mutate the arrays in place):
 #   cm_aggregate_menu     - two-level menu: rows are repos; SPACE enables or
@@ -58,6 +70,7 @@ fi
 # Associative state shared with callers. Declared here so sourcing alone makes
 # them available; callers may also declare them, which is harmless.
 declare -gA CM_REPO_LABEL CM_REPO_ENABLED CM_COMP_IDS CM_COMP_LABEL CM_COMP_ON 2>/dev/null || true
+declare -gA CM_COMP_INSTALLED CM_COMP_UNINSTALL 2>/dev/null || true
 declare -ga CM_REPOS 2>/dev/null || true
 
 ###############################################################################
@@ -98,8 +111,26 @@ cm_read_key() {
     q|Q) echo QUIT ;;
     a|A) echo ALL ;;
     n|N) echo NONE ;;
+    u|U) echo UNINSTALL ;;
+    r|R) echo RECONFIG ;;
     *)   echo OTHER ;;
   esac
+}
+
+###############################################################################
+# Install-state helpers
+###############################################################################
+
+# Echo the number of installed components for a repo (CM_COMP_INSTALLED==1).
+#
+# Arguments:
+#   $1 - repo id whose installed components are counted.
+cm_repo_installed_count() {
+  local repo="$1" id count=0
+  for id in ${CM_COMP_IDS[$repo]:-}; do
+    [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]] && count=$((count + 1))
+  done
+  printf '%s' "$count"
 }
 
 ###############################################################################
@@ -148,18 +179,35 @@ cm_repo_total_count() {
 cm_render_submenu() {
   local repo="$1" sel="$2" title="$3" footer="$4"
   local -a ids=(${CM_COMP_IDS[$repo]:-})
-  local i id mark box label on total
+  local i id mark box label on total inst tag
   on="$(cm_repo_on_count "$repo")"
   total="$(cm_repo_total_count "$repo")"
+  inst="$(cm_repo_installed_count "$repo")"
   cm_clear
   printf '  \033[1m%s\033[0m\n' "$title"
-  printf '  \033[2m%s — %s/%s enabled\033[0m\n\n' "${CM_REPO_LABEL[$repo]:-$repo}" "$on" "$total"
+  if (( inst > 0 )); then
+    printf '  \033[2m%s — %s/%s selected, %s/%s already installed\033[0m\n\n' \
+      "${CM_REPO_LABEL[$repo]:-$repo}" "$on" "$total" "$inst" "$total"
+  else
+    printf '  \033[2m%s — %s/%s selected\033[0m\n\n' "${CM_REPO_LABEL[$repo]:-$repo}" "$on" "$total"
+  fi
   for i in "${!ids[@]}"; do
     id="${ids[$i]}"
     if [[ "$i" == "$sel" ]]; then mark='\033[36m›\033[0m'; else mark=' '; fi
-    if [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then box='[\033[32mx\033[0m]'; else box='[ ]'; fi
     label="${CM_COMP_LABEL[$repo|$id]:-$id}"
-    printf '   %b %b %s\n' "$mark" "$box" "$label"
+    tag=''
+    if [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]]; then
+      if [[ "${CM_COMP_UNINSTALL[$repo|$id]:-0}" == "1" ]]; then
+        box='[\033[31m✗\033[0m]'; tag=' \033[31m(uninstall)\033[0m'
+      elif [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then
+        box='[\033[33m~\033[0m]'; tag=' \033[33m(reconfigure)\033[0m'
+      else
+        box='[\033[32m✓\033[0m]'; tag=' \033[2m(installed)\033[0m'
+      fi
+    else
+      if [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then box='[\033[32mx\033[0m]'; else box='[ ]'; fi
+    fi
+    printf '   %b %b %s%b\n' "$mark" "$box" "$label" "$tag"
   done
   printf '\n  \033[2m%s\033[0m\n' "$footer"
 }
@@ -179,9 +227,9 @@ cm_submenu_loop() {
   local sel=0 key id title footer
   title="Configure components"
   if [[ "$mode" == "standalone" ]]; then
-    footer="[↑/↓] move   [space] toggle   [a] all   [n] none   [enter] install   [q] cancel"
+    footer="[↑/↓] move  [space] toggle  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [enter] apply  [q] cancel"
   else
-    footer="[↑/↓] move   [space] toggle   [a] all   [n] none   [←/enter] back"
+    footer="[↑/↓] move  [space] toggle  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [←/enter] back"
   fi
   while true; do
     (( sel < 0 )) && sel=0
@@ -194,13 +242,38 @@ cm_submenu_loop() {
       SPACE)
         id="${ids[$sel]:-}"
         [[ -z "$id" ]] && continue
+        # SPACE selects a component to apply (install if absent, reconfigure if
+        # installed) and always clears any pending uninstall mark.
+        CM_COMP_UNINSTALL[$repo|$id]=0
         if [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then
           CM_COMP_ON[$repo|$id]=0
         else
           CM_COMP_ON[$repo|$id]=1
         fi
         ;;
-      ALL)  for id in "${ids[@]}"; do CM_COMP_ON[$repo|$id]=1; done ;;
+      UNINSTALL)
+        id="${ids[$sel]:-}"
+        [[ -z "$id" ]] && continue
+        # Uninstall only applies to installed components; toggling it clears the
+        # apply/reconfigure selection so the two actions never conflict.
+        [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]] || continue
+        if [[ "${CM_COMP_UNINSTALL[$repo|$id]:-0}" == "1" ]]; then
+          CM_COMP_UNINSTALL[$repo|$id]=0
+        else
+          CM_COMP_UNINSTALL[$repo|$id]=1
+          CM_COMP_ON[$repo|$id]=0
+        fi
+        ;;
+      RECONFIG)
+        # Mark every installed component for reconfigure (idempotent re-apply).
+        for id in "${ids[@]}"; do
+          if [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]]; then
+            CM_COMP_ON[$repo|$id]=1
+            CM_COMP_UNINSTALL[$repo|$id]=0
+          fi
+        done
+        ;;
+      ALL)  for id in "${ids[@]}"; do CM_COMP_ON[$repo|$id]=1; CM_COMP_UNINSTALL[$repo|$id]=0; done ;;
       NONE) for id in "${ids[@]}"; do CM_COMP_ON[$repo|$id]=0; done ;;
       LEFT)
         [[ "$mode" == "embedded" ]] && return 0
@@ -258,7 +331,13 @@ cm_render_aggregate() {
     if [[ "${CM_REPO_ENABLED[$repo]:-0}" == "1" ]]; then
       on="$(cm_repo_on_count "$repo")"
       if (( total > 0 )); then
-        status="$(printf '(%s/%s) \033[36m›\033[0m' "$on" "$total")"
+        local inst
+        inst="$(cm_repo_installed_count "$repo")"
+        if (( inst > 0 )); then
+          status="$(printf '(%s/%s, \033[32m%s installed\033[0m) \033[36m›\033[0m' "$on" "$total" "$inst")"
+        else
+          status="$(printf '(%s/%s) \033[36m›\033[0m' "$on" "$total")"
+        fi
       else
         status='(no options)'
       fi
@@ -267,7 +346,7 @@ cm_render_aggregate() {
     fi
     printf '   %b %b %-44s %b\n' "$mark" "$box" "$label" "$status"
   done
-  printf '\n  \033[2m[↑/↓] move   [space] enable/disable   [→] configure   [enter] install   [q] cancel\033[0m\n'
+  printf '\n  \033[2m[↑/↓] move   [space] enable/disable   [→] configure (incl. reconfigure/uninstall)   [enter] apply   [q] cancel\033[0m\n'
 }
 
 # Public: run the two-level aggregate menu.
