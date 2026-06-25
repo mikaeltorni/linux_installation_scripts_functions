@@ -187,10 +187,22 @@ cm_repo_total_count() {
 cm_render_submenu() {
   local repo="$1" sel="$2" title="$3" footer="$4"
   local -a ids=(${CM_COMP_IDS[$repo]:-})
-  local i id mark box label on total inst tag
+  local i id mark box label on total inst tag term_rows visible_rows offset end
   on="$(cm_repo_on_count "$repo")"
   total="$(cm_repo_total_count "$repo")"
   inst="$(cm_repo_installed_count "$repo")"
+  term_rows="${LINES:-}"
+  [[ "$term_rows" =~ ^[0-9]+$ ]] || term_rows="$(tput lines 2>/dev/null || printf '24')"
+  # Header/status/blank/footer consume six lines. Render a moving window of
+  # components so long repositories remain usable on small terminals.
+  visible_rows=$((term_rows - 6))
+  (( visible_rows < 1 )) && visible_rows=1
+  offset=0
+  if (( sel >= visible_rows )); then
+    offset=$((sel - visible_rows + 1))
+  fi
+  end=$((offset + visible_rows))
+  (( end > ${#ids[@]} )) && end=${#ids[@]}
   cm_clear
   printf '  \033[1m%s\033[0m\n' "$title"
   if (( inst > 0 )); then
@@ -199,7 +211,10 @@ cm_render_submenu() {
   else
     printf '  \033[2m%s — %s/%s selected\033[0m\n\n' "${CM_REPO_LABEL[$repo]:-$repo}" "$on" "$total"
   fi
-  for i in "${!ids[@]}"; do
+  if (( offset > 0 )); then
+    printf '     \033[2m... %s more above ...\033[0m\n' "$offset"
+  fi
+  for ((i = offset; i < end; i++)); do
     id="${ids[$i]}"
     if [[ "$i" == "$sel" ]]; then mark='\033[36m›\033[0m'; else mark=' '; fi
     label="${CM_COMP_LABEL[$repo|$id]:-$id}"
@@ -224,6 +239,9 @@ cm_render_submenu() {
     fi
     printf '   %b %b %s%b\n' "$mark" "$box" "$label" "$tag"
   done
+  if (( end < ${#ids[@]} )); then
+    printf '     \033[2m... %s more below ...\033[0m\n' "$((${#ids[@]} - end))"
+  fi
   printf '\n  \033[2m%s\033[0m\n' "$footer"
 }
 

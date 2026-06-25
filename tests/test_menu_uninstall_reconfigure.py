@@ -9,6 +9,7 @@ an installed component for uninstall ([u]), and reconfigure-all ([r]).
 """
 
 import subprocess
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -116,6 +117,35 @@ def test_f_toggles_existing_favorite_off():
     state = drive(["DOWN", "F", "ENTER"])
     assert state["beta.favorite"] == "0"
     assert state["beta.on"] == "1"
+
+
+def test_submenu_render_scrolls_long_component_lists():
+    """Long submenus should keep the selected row visible on small terminals."""
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_REPO_LABEL[$repo]=Demo
+for i in $(seq 1 12); do
+  id="item$i"
+  CM_COMP_IDS[$repo]="${{CM_COMP_IDS[$repo]:-}} $id"
+  CM_COMP_LABEL[$repo|$id]="Item $i"
+  CM_COMP_ON[$repo|$id]=1
+done
+LINES=10 cm_render_submenu "$repo" 9 "Configure components" "footer"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPO,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Item 10" in result.stdout
+    assert "more above" in result.stdout
+    assert not re.search(r"Item 1(?![0-9])", result.stdout)
 
 
 if __name__ == "__main__":
