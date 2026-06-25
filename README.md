@@ -152,6 +152,11 @@ selects an installed component for **reconfigure** (`~`), `[u]` marks it for
 `[f]` toggles GNOME dock favourite selection for app components that expose
 favourite metadata. Favourite-selected rows show `F` instead of `x`.
 
+In the aggregate master menu, setting `ISC_MENU_DEBUG=1` exposes `[l] log state`.
+That action writes a quiet snapshot of every repository and component state
+(selected, installed, pending reconfigure, pending uninstall, or absent) to the
+framework log file without printing the dump into the TUI.
+
 ## Resolution order
 
 `isc_activate_components` looks for the framework in this order:
@@ -179,6 +184,7 @@ TUI is never corrupted) and the directory is created on demand:
 | `ISC_LOG_NAME` | `installer_components.log` | Log file name within `ISC_LOG_DIR`. |
 | `ISC_LOG_LEVEL` | `debug` | Minimum level recorded (`verbose` < `debug` < `info` < `warn` < `error`). |
 | `ISC_LOG_TAG` | `$ISC_REPO_NAME`, else `framework` | Context tag added to each line. |
+| `ISC_MENU_DEBUG` | unset | Set to `1` to unlock debug-only aggregate-menu actions such as `[l] log state`. |
 
 Log files are runtime artifacts and are git-ignored via `.log/`. Logging is
 best-effort: a read-only filesystem or missing `date` never aborts an installer.

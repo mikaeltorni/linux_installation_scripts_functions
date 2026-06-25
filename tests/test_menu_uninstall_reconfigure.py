@@ -10,6 +10,7 @@ an installed component for uninstall ([u]), and reconfigure-all ([r]).
 
 import subprocess
 import re
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -19,6 +20,7 @@ KEYS = {
     "DOWN": "\x1b[B",
     "UP": "\x1b[A",
     "SPACE": " ",
+    "L": "l",
     "U": "u",
     "R": "r",
     "F": "f",
@@ -240,9 +242,93 @@ printf '%s' "$out"
     assert result.stdout.count("›") == 1
 
 
-if __name__ == "__main__":
-    import tempfile  # noqa: F401
+def test_debug_aggregate_log_key_writes_component_state():
+    """Debug-only [l] should log every repo/component state without stdout dump."""
+    keystream = KEYS["L"] + KEYS["ENTER"]
+    with tempfile.TemporaryDirectory() as tmp:
+        log_dir = Path(tmp) / "menu-log"
+        script = f"""
+set -uo pipefail
+export ISC_MENU_DEBUG=1
+export ISC_LOG_DIR="{log_dir}"
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_REPOS=("$repo")
+CM_REPO_LABEL[$repo]=Demo
+CM_REPO_ENABLED[$repo]=1
+CM_COMP_IDS[$repo]="alpha beta gamma"
+CM_COMP_LABEL[$repo|alpha]=Alpha
+CM_COMP_LABEL[$repo|beta]=Beta
+CM_COMP_LABEL[$repo|gamma]=Gamma
+CM_COMP_INSTALLED[$repo|alpha]=1
+CM_COMP_INSTALLED[$repo|beta]=0
+CM_COMP_INSTALLED[$repo|gamma]=1
+CM_COMP_ON[$repo|alpha]=0
+CM_COMP_ON[$repo|beta]=1
+CM_COMP_ON[$repo|gamma]=0
+CM_COMP_UNINSTALL[$repo|gamma]=1
+CM_COMP_FAVORITE_ON[$repo|beta]=1
+cm_aggregate_menu
+printf 'log=%s\\n' "$(isc_log_file)"
+"""
+        result = subprocess.run(
+            ["bash", "-c", script],
+            cwd=REPO,
+            input=keystream,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
 
+        assert result.returncode == 0, result.stderr
+        assert "component_state repo=demo component=alpha" not in result.stdout
+        log_line = next(line for line in result.stdout.splitlines() if "log=" in line)
+        log_file = Path(log_line.split("log=", 1)[1])
+        text = log_file.read_text()
+        assert "component state snapshot begin" in text
+        assert "repo=demo enabled=1 selected=1 total=3 installed=2" in text
+        assert "component=alpha label=Alpha state=installed" in text
+        assert "component=beta label=Beta state=pending_install favorite=1" in text
+        assert "component=gamma label=Gamma state=pending_uninstall" in text
+
+
+def test_aggregate_log_key_is_ignored_without_debug():
+    """Without ISC_MENU_DEBUG, [l] should be hidden and should not write state logs."""
+    keystream = KEYS["L"] + KEYS["ENTER"]
+    with tempfile.TemporaryDirectory() as tmp:
+        log_dir = Path(tmp) / "menu-log"
+        script = f"""
+set -uo pipefail
+export ISC_LOG_DIR="{log_dir}"
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_REPOS=("$repo")
+CM_REPO_LABEL[$repo]=Demo
+CM_REPO_ENABLED[$repo]=1
+CM_COMP_IDS[$repo]="alpha"
+CM_COMP_LABEL[$repo|alpha]=Alpha
+CM_COMP_ON[$repo|alpha]=1
+cm_aggregate_menu
+printf 'log=%s\\n' "$(isc_log_file)"
+"""
+        result = subprocess.run(
+            ["bash", "-c", script],
+            cwd=REPO,
+            input=keystream,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "[l] log state" not in result.stdout
+        log_line = next(line for line in result.stdout.splitlines() if "log=" in line)
+        log_file = Path(log_line.split("log=", 1)[1])
+        text = log_file.read_text() if log_file.exists() else ""
+        assert "component state snapshot begin" not in text
+
+
+if __name__ == "__main__":
     tests = [v for n, v in sorted(globals().items()) if n.startswith("test_") and callable(v)]
     failures = 0
     for test in tests:

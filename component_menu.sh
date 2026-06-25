@@ -25,6 +25,8 @@
 #                           GNOME favourite app from the program menu
 #   CM_COMP_FAVORITE_ON[repo|id] - 1 when the component should be included in
 #                           the generated favourite-apps list
+#   ISC_MENU_DEBUG       - 1 enables debug-only menu helpers such as [l] state
+#                           logging in the aggregate menu
 #
 # Per-component states shown in the checklist:
 #   [ ] absent, will be skipped          [x] absent, will be installed
@@ -33,7 +35,8 @@
 #   [F] app component selected for dock favourites
 # SPACE toggles install/reconfigure, [f] toggles dock favourite selection for
 # eligible app components, [u] toggles uninstall of an installed component, and
-# [r] marks every installed component for reconfigure.
+# [r] marks every installed component for reconfigure. In aggregate-menu debug
+# mode, [l] writes a quiet component state snapshot to the framework log file.
 #
 # Entry points (all mutate the arrays in place):
 #   cm_aggregate_menu     - two-level menu: rows are repos; SPACE enables or
@@ -95,7 +98,8 @@ cm_clear() { printf '\033[2J\033[H'; }
 
 # Read a single keypress and echo a normalized token.
 #
-# Returns one of: UP DOWN LEFT RIGHT SPACE ENTER ESC QUIT ALL NONE FAVORITE OTHER.
+# Returns one of: UP DOWN LEFT RIGHT SPACE ENTER ESC QUIT ALL NONE FAVORITE
+# UNINSTALL RECONFIG LOG OTHER.
 cm_read_key() {
   local key rest
   IFS= read -rsn1 key 2>/dev/null || { echo QUIT; return; }
@@ -121,6 +125,7 @@ cm_read_key() {
     f|F) echo FAVORITE ;;
     u|U) echo UNINSTALL ;;
     r|R) echo RECONFIG ;;
+    l|L) echo LOG ;;
     *)   echo OTHER ;;
   esac
 }
@@ -189,6 +194,64 @@ cm_comp_ids_for_repo() {
   for raw in ${CM_COMP_IDS[$repo]:-}; do
     [[ -n "$raw" ]] && _dest+=("$raw")
   done
+}
+
+# Echo the action/state currently represented by a component's menu flags.
+#
+# Arguments:
+#   $1 - repo id
+#   $2 - component id
+#
+# Returns:
+#   0; prints one of installed, absent, pending_install, pending_reconfigure,
+#   or pending_uninstall.
+cm_component_state() {
+  local repo="$1" id="$2"
+  if [[ "${CM_COMP_UNINSTALL[$repo|$id]:-0}" == "1" ]]; then
+    printf 'pending_uninstall'
+  elif [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]]; then
+    if [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then
+      printf 'pending_reconfigure'
+    else
+      printf 'installed'
+    fi
+  elif [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then
+    printf 'pending_install'
+  else
+    printf 'absent'
+  fi
+}
+
+# Log a full aggregate-menu state snapshot without writing to the terminal.
+#
+# The snapshot is intentionally line-oriented so grep/tail can answer what was
+# installed, absent, selected, marked for uninstall, or disabled during a debug
+# installer run.
+#
+# Arguments:
+#   none; reads the global CM_* arrays.
+#
+# Returns:
+#   0 always.
+cm_log_component_state_snapshot() {
+  local repo id state label enabled selected total installed favorite
+  isc_log_info "component state snapshot begin"
+  for repo in "${CM_REPOS[@]}"; do
+    [[ -n "$repo" ]] || continue
+    enabled="${CM_REPO_ENABLED[$repo]:-0}"
+    selected="$(cm_repo_on_count "$repo")"
+    total="$(cm_repo_total_count "$repo")"
+    installed="$(cm_repo_installed_count "$repo")"
+    isc_log_info "component_state repo=$repo enabled=$enabled selected=$selected total=$total installed=$installed label=${CM_REPO_LABEL[$repo]:-$repo}"
+    for id in ${CM_COMP_IDS[$repo]:-}; do
+      [[ -n "$id" ]] || continue
+      state="$(cm_component_state "$repo" "$id")"
+      label="${CM_COMP_LABEL[$repo|$id]:-$id}"
+      favorite="${CM_COMP_FAVORITE_ON[$repo|$id]:-0}"
+      isc_log_info "component_state repo=$repo component=$id label=$label state=$state favorite=$favorite selected=${CM_COMP_ON[$repo|$id]:-0} installed=${CM_COMP_INSTALLED[$repo|$id]:-0} uninstall=${CM_COMP_UNINSTALL[$repo|$id]:-0}"
+    done
+  done
+  isc_log_info "component state snapshot end"
 }
 
 ###############################################################################
@@ -476,7 +539,11 @@ cm_render_aggregate() {
   if (( end < ${#CM_REPOS[@]} )); then
     printf '     \033[2m... %s more below ...\033[0m\n' "$((${#CM_REPOS[@]} - end))"
   fi
-  printf '\n  \033[2m[↑/↓] move   [space] enable/disable   [→] configure (incl. reconfigure/uninstall)   [enter] apply   [q] cancel\033[0m\n'
+  if [[ "${ISC_MENU_DEBUG:-0}" == "1" ]]; then
+    printf '\n  \033[2m[↑/↓] move   [space] enable/disable   [→] configure (incl. reconfigure/uninstall)   [l] log state   [enter] apply   [q] cancel\033[0m\n'
+  else
+    printf '\n  \033[2m[↑/↓] move   [space] enable/disable   [→] configure (incl. reconfigure/uninstall)   [enter] apply   [q] cancel\033[0m\n'
+  fi
 }
 
 # Public: run the two-level aggregate menu.
@@ -510,6 +577,10 @@ cm_aggregate_menu() {
         [[ "$(cm_repo_total_count "$repo")" == "0" ]] && continue
         cm_submenu_loop "$repo" embedded
         cm_hide_cursor
+        ;;
+      LOG)
+        [[ "${ISC_MENU_DEBUG:-0}" == "1" ]] || continue
+        cm_log_component_state_snapshot
         ;;
       ENTER)
         isc_log_info "aggregate menu accepted"
