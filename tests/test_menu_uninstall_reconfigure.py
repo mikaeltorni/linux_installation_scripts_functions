@@ -148,6 +148,98 @@ LINES=10 cm_render_submenu "$repo" 9 "Configure components" "footer"
     assert not re.search(r"Item 1(?![0-9])", result.stdout)
 
 
+def test_submenu_render_reserves_rows_for_scroll_hints():
+    """Scroll hints must not push the selected row off-screen."""
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_REPO_LABEL[$repo]=Demo
+for i in $(seq 1 12); do
+  id="item$i"
+  CM_COMP_IDS[$repo]="${{CM_COMP_IDS[$repo]:-}} $id"
+  CM_COMP_LABEL[$repo|$id]="Item $i"
+  CM_COMP_ON[$repo|$id]=1
+done
+out="$(LINES=10 cm_render_submenu "$repo" 9 "Configure components" "footer")"
+line_count=$(printf '%s' "$out" | wc -l)
+printf 'lines=%s\\n' "$line_count"
+printf '%s' "$out"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPO,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = int(result.stdout.splitlines()[0].split("=", 1)[1])
+    assert lines <= 10, result.stdout
+    assert "Item 10" in result.stdout
+
+
+def test_embedded_submenu_toggles_component_and_returns():
+    """Embedded submenu must accept keys and return to the aggregate menu."""
+    keystream = KEYS["DOWN"] + KEYS["SPACE"] + KEYS["ENTER"]
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_REPO_LABEL[$repo]=Demo
+CM_COMP_IDS[$repo]="alpha beta"
+CM_COMP_LABEL[$repo|alpha]=Alpha
+CM_COMP_LABEL[$repo|beta]=Beta
+CM_COMP_ON[$repo|alpha]=1
+CM_COMP_ON[$repo|beta]=1
+CM_COMP_INSTALLED[$repo|alpha]=0
+CM_COMP_INSTALLED[$repo|beta]=0
+cm_submenu_loop "$repo" embedded >/dev/null
+printf 'alpha=%s beta=%s\\n' "${{CM_COMP_ON[$repo|alpha]:-0}}" "${{CM_COMP_ON[$repo|beta]:-0}}"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPO,
+        input=keystream,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "alpha=1" in result.stdout
+    assert "beta=0" in result.stdout
+
+
+def test_submenu_skips_blank_component_ids():
+    """Blank ids from malformed manifests must not create dead menu rows."""
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_COMP_IDS[$repo]="alpha  beta"
+CM_COMP_LABEL[$repo|alpha]=Alpha
+CM_COMP_LABEL[$repo|beta]=Beta
+CM_COMP_ON[$repo|alpha]=1
+CM_COMP_ON[$repo|beta]=1
+out="$(cm_render_submenu "$repo" 1 "Configure components" "footer")"
+printf '%s' "$out"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPO,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Alpha" in result.stdout
+    assert "Beta" in result.stdout
+    assert result.stdout.count("›") == 1
+
+
 if __name__ == "__main__":
     import tempfile  # noqa: F401
 

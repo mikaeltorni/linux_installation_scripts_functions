@@ -136,6 +136,7 @@ cm_read_key() {
 cm_repo_installed_count() {
   local repo="$1" id count=0
   for id in ${CM_COMP_IDS[$repo]:-}; do
+    [[ -n "$id" ]] || continue
     [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]] && count=$((count + 1))
   done
   printf '%s' "$count"
@@ -155,6 +156,7 @@ cm_repo_installed_count() {
 cm_repo_on_count() {
   local repo="$1" id count=0
   for id in ${CM_COMP_IDS[$repo]:-}; do
+    [[ -n "$id" ]] || continue
     [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]] && count=$((count + 1))
   done
   printf '%s' "$count"
@@ -169,8 +171,24 @@ cm_repo_on_count() {
 #   0; prints the total number of component ids registered for the repo.
 cm_repo_total_count() {
   local repo="$1" id count=0
-  for id in ${CM_COMP_IDS[$repo]:-}; do count=$((count + 1)); done
+  for id in ${CM_COMP_IDS[$repo]:-}; do
+    [[ -n "$id" ]] && count=$((count + 1))
+  done
   printf '%s' "$count"
+}
+
+# Copy non-empty component ids for a repo into a caller-provided array.
+#
+# Arguments:
+#   $1 - repo id
+#   $2 - name of the destination array variable (nameref)
+cm_comp_ids_for_repo() {
+  local repo="$1" raw
+  local -n _dest="$2"
+  _dest=()
+  for raw in ${CM_COMP_IDS[$repo]:-}; do
+    [[ -n "$raw" ]] && _dest+=("$raw")
+  done
 }
 
 ###############################################################################
@@ -186,16 +204,26 @@ cm_repo_total_count() {
 #   $4 - footer/help line
 cm_render_submenu() {
   local repo="$1" sel="$2" title="$3" footer="$4"
-  local -a ids=(${CM_COMP_IDS[$repo]:-})
-  local i id mark box label on total inst tag term_rows visible_rows offset end
+  local -a ids=()
+  local i id mark box label on total inst tag term_rows chrome_rows footer_rows
+  local visible_rows offset end indicators
+  cm_comp_ids_for_repo "$repo" ids
+  if (( ${#ids[@]} > 0 )); then
+    if (( sel < 0 )); then sel=0; fi
+    if (( sel >= ${#ids[@]} )); then sel=$(( ${#ids[@]} - 1 )); fi
+  else
+    sel=0
+  fi
   on="$(cm_repo_on_count "$repo")"
   total="$(cm_repo_total_count "$repo")"
   inst="$(cm_repo_installed_count "$repo")"
   term_rows="${LINES:-}"
   [[ "$term_rows" =~ ^[0-9]+$ ]] || term_rows="$(tput lines 2>/dev/null || printf '24')"
-  # Header/status/blank/footer consume six lines. Render a moving window of
-  # components so long repositories remain usable on small terminals.
-  visible_rows=$((term_rows - 6))
+  # Title, status, blank, and footer consume fixed rows; scroll hints add one
+  # line each so the selected row never renders past the terminal bottom.
+  chrome_rows=4
+  footer_rows=2
+  visible_rows=$((term_rows - chrome_rows - footer_rows))
   (( visible_rows < 1 )) && visible_rows=1
   offset=0
   if (( sel >= visible_rows )); then
@@ -203,6 +231,19 @@ cm_render_submenu() {
   fi
   end=$((offset + visible_rows))
   (( end > ${#ids[@]} )) && end=${#ids[@]}
+  indicators=0
+  (( offset > 0 )) && indicators=$((indicators + 1))
+  (( end < ${#ids[@]} )) && indicators=$((indicators + 1))
+  if (( indicators > 0 )); then
+    visible_rows=$((term_rows - chrome_rows - footer_rows - indicators))
+    (( visible_rows < 1 )) && visible_rows=1
+    offset=0
+    if (( sel >= visible_rows )); then
+      offset=$((sel - visible_rows + 1))
+    fi
+    end=$((offset + visible_rows))
+    (( end > ${#ids[@]} )) && end=${#ids[@]}
+  fi
   cm_clear
   printf '  \033[1m%s\033[0m\n' "$title"
   if (( inst > 0 )); then
@@ -256,13 +297,23 @@ cm_render_submenu() {
 #   0 when accepted / returned to parent; 1 when cancelled in standalone mode.
 cm_submenu_loop() {
   local repo="$1" mode="${2:-embedded}"
-  local -a ids=(${CM_COMP_IDS[$repo]:-})
+  local -a ids=()
   local sel=0 key id title footer
+  cm_comp_ids_for_repo "$repo" ids
   title="Configure components"
   if [[ "$mode" == "standalone" ]]; then
     footer="[↑/↓] move  [space] toggle  [f] favourite  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [enter] apply  [q] cancel"
   else
     footer="[↑/↓] move  [space] toggle  [f] favourite  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [←/enter] back"
+    cm_show_cursor
+  fi
+  if (( ${#ids[@]} == 0 )); then
+    cm_clear
+    printf '  \033[1m%s\033[0m\n\n' "$title"
+    printf '  \033[2mNo selectable components for %s.\033[0m\n\n' "${CM_REPO_LABEL[$repo]:-$repo}"
+    printf '  \033[2m%s\033[0m\n' "$footer"
+    cm_read_key >/dev/null
+    return 0
   fi
   while true; do
     (( sel < 0 )) && sel=0
@@ -363,11 +414,42 @@ cm_single_submenu() {
 #   $1 - currently selected row index
 cm_render_aggregate() {
   local sel="$1"
-  local i repo mark box label on total status
+  local i repo mark box label on total status term_rows chrome_rows footer_rows
+  local visible_rows offset end indicators
+  if (( sel < 0 )); then sel=0; fi
+  if (( sel >= ${#CM_REPOS[@]} )); then sel=$(( ${#CM_REPOS[@]} - 1 )); fi
+  term_rows="${LINES:-}"
+  [[ "$term_rows" =~ ^[0-9]+$ ]] || term_rows="$(tput lines 2>/dev/null || printf '24')"
+  chrome_rows=3
+  footer_rows=2
+  visible_rows=$((term_rows - chrome_rows - footer_rows))
+  (( visible_rows < 1 )) && visible_rows=1
+  offset=0
+  if (( sel >= visible_rows )); then
+    offset=$((sel - visible_rows + 1))
+  fi
+  end=$((offset + visible_rows))
+  (( end > ${#CM_REPOS[@]} )) && end=${#CM_REPOS[@]}
+  indicators=0
+  (( offset > 0 )) && indicators=$((indicators + 1))
+  (( end < ${#CM_REPOS[@]} )) && indicators=$((indicators + 1))
+  if (( indicators > 0 )); then
+    visible_rows=$((term_rows - chrome_rows - footer_rows - indicators))
+    (( visible_rows < 1 )) && visible_rows=1
+    offset=0
+    if (( sel >= visible_rows )); then
+      offset=$((sel - visible_rows + 1))
+    fi
+    end=$((offset + visible_rows))
+    (( end > ${#CM_REPOS[@]} )) && end=${#CM_REPOS[@]}
+  fi
   cm_clear
   printf '  \033[1mInstallation Components\033[0m\n'
   printf '  \033[2mSelect what to install. Disabled repositories are skipped entirely.\033[0m\n\n'
-  for i in "${!CM_REPOS[@]}"; do
+  if (( offset > 0 )); then
+    printf '     \033[2m... %s more above ...\033[0m\n' "$offset"
+  fi
+  for ((i = offset; i < end; i++)); do
     repo="${CM_REPOS[$i]}"
     if [[ "$i" == "$sel" ]]; then mark='\033[36m›\033[0m'; else mark=' '; fi
     if [[ "${CM_REPO_ENABLED[$repo]:-0}" == "1" ]]; then box='[\033[32mx\033[0m]'; else box='[ ]'; fi
@@ -391,6 +473,9 @@ cm_render_aggregate() {
     fi
     printf '   %b %b %-44s %b\n' "$mark" "$box" "$label" "$status"
   done
+  if (( end < ${#CM_REPOS[@]} )); then
+    printf '     \033[2m... %s more below ...\033[0m\n' "$((${#CM_REPOS[@]} - end))"
+  fi
   printf '\n  \033[2m[↑/↓] move   [space] enable/disable   [→] configure (incl. reconfigure/uninstall)   [enter] apply   [q] cancel\033[0m\n'
 }
 
@@ -424,6 +509,7 @@ cm_aggregate_menu() {
         [[ "${CM_REPO_ENABLED[$repo]:-0}" != "1" ]] && continue
         [[ "$(cm_repo_total_count "$repo")" == "0" ]] && continue
         cm_submenu_loop "$repo" embedded
+        cm_hide_cursor
         ;;
       ENTER)
         isc_log_info "aggregate menu accepted"
