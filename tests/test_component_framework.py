@@ -206,10 +206,18 @@ def test_installer_helpers_use_root_optional_run_as_target():
     """The shared run_as_target must avoid unconditional sudo (sudo-free path)."""
     source = (REPO / "installer_helpers.sh").read_text()
     # Same-user branch runs without sudo; only a differing user escalates.
-    assert 'if [ "$(id -un)" = "$TARGET_USER" ]; then' in source
+    assert 'if [ "$(PATH="$command_path" id -un)" = "$TARGET_USER" ]; then' in source
     assert "sudo -H -u" in source
     assert 'source "$_isc_helpers_dir/component_logging.sh"' in source
-    for fn in ("run_as_target()", "msg()", "need_cmd()", "apt_install()", "ensure_session_bus()"):
+    for fn in (
+        "run_as_target()",
+        "msg()",
+        "need_cmd()",
+        "apt_install()",
+        "ensure_session_bus()",
+        "installer_auth_enabled()",
+        "ensure_linked_repository()",
+    ):
         assert fn in source, f"missing {fn}"
 
 
@@ -241,6 +249,183 @@ report_sudo_required
         assert "[WARN" in text
         assert "root-only step deferred: install demo package" in text
         assert "root-only steps still pending: install demo package" in text
+
+
+def test_run_as_target_adds_system_path_for_commands():
+    """run_as_target should preserve commands when PATH is stripped."""
+    script = f"""
+set -uo pipefail
+source "{REPO}/installer_helpers.sh"
+TARGET_USER="$(id -un)"; TARGET_HOME="$HOME"
+RUNTIME_DIR="/run/user/$(id -u)"; USER_BUS="unix:path=$RUNTIME_DIR/bus"; DISPLAY_VAL=":0"
+PATH=/tmp
+run_as_target sh -c 'printf "%s\\n" "$PATH"; command -v sh >/dev/null'
+"""
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "/usr/bin" in result.stdout
+    assert "/bin" in result.stdout
+
+
+def test_run_as_target_clears_sudo_identity_for_target_commands():
+    """Target-user commands should not inherit a parent sudo identity."""
+    script = f"""
+set -uo pipefail
+source "{REPO}/installer_helpers.sh"
+TARGET_USER="$(id -un)"; TARGET_HOME="$HOME"
+RUNTIME_DIR="/run/user/$(id -u)"; USER_BUS="unix:path=$RUNTIME_DIR/bus"; DISPLAY_VAL=":0"
+export SUDO_USER=root SUDO_UID=0 SUDO_GID=0
+run_as_target sh -c 'printf "sudo_user=%s\\nsudo_uid=%s\\nsudo_gid=%s\\n" "${{SUDO_USER-unset}}" "${{SUDO_UID-unset}}" "${{SUDO_GID-unset}}"'
+"""
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "sudo_user=\nsudo_uid=\nsudo_gid=\n"
+
+
+def test_run_as_target_clears_sudo_identity_in_sudo_branch():
+    """The sudo -u branch should scrub sudo identity variables too."""
+    with tempfile.TemporaryDirectory() as tmp:
+        bin_dir = Path(tmp) / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "id").write_text(
+            "#!/bin/sh\nif [ \"$1\" = \"-un\" ]; then printf 'root\\n'; else /usr/bin/id \"$@\"; fi\n",
+            encoding="utf-8",
+        )
+        (bin_dir / "sudo").write_text(
+            """#!/bin/sh
+if [ "$1" = "-H" ]; then shift; fi
+if [ "$1" = "-u" ]; then shift 2; fi
+exec "$@"
+""",
+            encoding="utf-8",
+        )
+        (bin_dir / "id").chmod(0o755)
+        (bin_dir / "sudo").chmod(0o755)
+        script = f"""
+set -uo pipefail
+source "{REPO}/installer_helpers.sh"
+TARGET_USER=demo; TARGET_HOME=/home/demo
+RUNTIME_DIR="/run/user/1001"; USER_BUS="unix:path=$RUNTIME_DIR/bus"; DISPLAY_VAL=":0"
+export SUDO_USER=root SUDO_UID=0 SUDO_GID=0
+PATH="{bin_dir}"
+run_as_target sh -c 'printf "sudo_user=%s\\nsudo_uid=%s\\nsudo_gid=%s\\n" "${{SUDO_USER-unset}}" "${{SUDO_UID-unset}}" "${{SUDO_GID-unset}}"'
+"""
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "sudo_user=\nsudo_uid=\nsudo_gid=\n"
+
+
+def test_linked_repository_helper_uses_existing_checkout_without_auth():
+    """Linked repo helper should not pull existing siblings unless auth is on."""
+    with tempfile.TemporaryDirectory() as tmp:
+        checkout = Path(tmp) / "linked"
+        (checkout / ".git").mkdir(parents=True)
+        script = f"""
+set -uo pipefail
+source "{REPO}/installer_helpers.sh"
+TARGET_USER="$(id -un)"; TARGET_HOME="$HOME"
+RUNTIME_DIR="/run/user/$(id -u)"; USER_BUS="unix:path=$RUNTIME_DIR/bus"; DISPLAY_VAL=":0"
+run_as_target() {{
+  printf 'RUN'
+  printf ' <%s>' "$@"
+  printf '\\n'
+}}
+ensure_linked_repository "linked repo" "{checkout}" "https://example.invalid/linked.git"
+"""
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "Using existing linked repo repository" in result.stdout
+    assert "RUN <git>" not in result.stdout
+
+
+def test_linked_repository_helper_updates_existing_checkout_with_auth():
+    """Linked repo helper should pull existing siblings when auth is on."""
+    with tempfile.TemporaryDirectory() as tmp:
+        checkout = Path(tmp) / "linked"
+        (checkout / ".git").mkdir(parents=True)
+        script = f"""
+set -uo pipefail
+INSTALLER_AUTH=1
+source "{REPO}/installer_helpers.sh"
+TARGET_USER="$(id -un)"; TARGET_HOME="$HOME"
+RUNTIME_DIR="/run/user/$(id -u)"; USER_BUS="unix:path=$RUNTIME_DIR/bus"; DISPLAY_VAL=":0"
+run_as_target() {{
+  printf 'RUN'
+  printf ' <%s>' "$@"
+  printf '\\n'
+}}
+ensure_linked_repository "linked repo" "{checkout}" "https://example.invalid/linked.git"
+"""
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "Updating existing linked repo repository" in result.stdout
+    assert f"RUN <env> <GIT_TERMINAL_PROMPT=0> <git> <-C> <{checkout}> <pull>" in result.stdout
+
+
+def test_linked_repository_helper_blocks_missing_checkout_without_auth():
+    """Linked repo helper should not clone private siblings unless auth is on."""
+    with tempfile.TemporaryDirectory() as tmp:
+        checkout = Path(tmp) / "linked"
+        script = f"""
+set -uo pipefail
+source "{REPO}/installer_helpers.sh"
+TARGET_USER="$(id -un)"; TARGET_HOME="$HOME"
+RUNTIME_DIR="/run/user/$(id -u)"; USER_BUS="unix:path=$RUNTIME_DIR/bus"; DISPLAY_VAL=":0"
+run_as_target() {{
+  printf 'RUN'
+  printf ' <%s>' "$@"
+  printf '\\n'
+}}
+ensure_linked_repository "linked repo" "{checkout}" "https://example.invalid/linked.git"
+"""
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "pass --auth or set INSTALLER_AUTH=1 to clone it" in result.stdout
+    assert "RUN <git>" not in result.stdout
+
+
+def test_linked_repository_helper_clones_missing_checkout_with_auth():
+    """Linked repo helper should clone missing siblings when auth is on."""
+    with tempfile.TemporaryDirectory() as tmp:
+        checkout = Path(tmp) / "linked"
+        script = f"""
+set -uo pipefail
+INSTALLER_AUTH=1
+source "{REPO}/installer_helpers.sh"
+TARGET_USER="$(id -un)"; TARGET_HOME="$HOME"
+RUNTIME_DIR="/run/user/$(id -u)"; USER_BUS="unix:path=$RUNTIME_DIR/bus"; DISPLAY_VAL=":0"
+run_as_target() {{
+  printf 'RUN'
+  printf ' <%s>' "$@"
+  printf '\\n'
+  if [ "$1" = env ] && [ "$3" = git ] && [ "$4" = clone ]; then
+    mkdir -p "{checkout}/.git"
+  fi
+}}
+ensure_linked_repository "linked repo" "{checkout}" "https://example.invalid/linked.git"
+"""
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "Cloning linked repo repository" in result.stdout
+    assert f"RUN <env> <GIT_TERMINAL_PROMPT=0> <git> <clone> <https://example.invalid/linked.git> <{checkout}>" in result.stdout
+
+
+def test_component_runtime_accepts_auth_argument():
+    """component_main should consume --auth and export INSTALLER_AUTH."""
+    with tempfile.TemporaryDirectory() as tmp:
+        script = f"""
+set -uo pipefail
+source "{REPO}/component_runtime.sh"
+ISC_REPO_NAME=test_repo
+ISC_COMPONENTS=("show|Show auth|on|show_auth")
+show_auth() {{ printf 'AUTH=%s\\n' "${{INSTALLER_AUTH:-0}}"; }}
+component_main --auth --default
+"""
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "AUTH=1" in result.stdout
+    assert "ignoring unknown argument: --auth" not in result.stdout
 
 
 def test_loader_sources_shared_helpers_from_sibling():

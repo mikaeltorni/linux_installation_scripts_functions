@@ -27,7 +27,7 @@ See the full cross-repository map in
 | `component_runtime.sh` | The per-repository installer contract: `--list-components`, `--select id,…`, `--default`, `--all`, an interactive submenu, and optional `ISC_PREFLIGHT` / `ISC_POSTFLIGHT` hooks. |
 | `component_loader.sh` | Resolves and activates the framework from a sibling checkout or by downloading it; exposes `isc_activate_components`. |
 | `component_logging.sh` | Centralized, dependency-free leveled logging (`verbose`/`debug`/`info`/`warn`/`error`) written to a per-repository `.log/` file with timestamps and a context tag. Sourced automatically by the loader, runtime, and menu; degrades to silent no-ops when absent. |
-| `installer_helpers.sh` | Shared install-time helpers (`run_as_target`, `msg`, `need_cmd`, `apt_install`, session-bus/root guards, and sudo-deferral reporting) loaded through `isc_load_helpers`; uses the same best-effort file logger. |
+| `installer_helpers.sh` | Shared install-time helpers (`run_as_target`, `msg`, `need_cmd`, `apt_install`, linked-repository auth gating, session-bus/root guards, and sudo-deferral reporting) loaded through `isc_load_helpers`; uses the same best-effort file logger. |
 | `logging_utils.py` | Centralized Python logging helper for repository maintenance scripts and tests; provides idempotent `.log/` file logging and the standard `log_call` tracing decorator. |
 | `install.sh` | Component-based installer that deploys this framework as selectable modules (core always installed; menu/runtime/helpers optional, default-on). |
 | `installer/components.sh` | This repository's optional-module manifest consumed by the shared runtime. |
@@ -72,6 +72,20 @@ component in `installer/components.sh`:
 Deselecting an optional module only means that file is not deployed locally; a
 consuming installer still fetches it on demand through `component_loader.sh`, so
 nothing breaks — the core always resolves and the rest downloads when needed.
+
+## Linked repository authentication
+
+The component runtime accepts `--auth`, which exports `INSTALLER_AUTH=1` for
+the selected components. Shared helpers use that flag for linked private setup
+repositories:
+
+- `ensure_linked_repository <label> <dir> <url>` uses an existing sibling
+  checkout as-is by default.
+- With `--auth` / `INSTALLER_AUTH=1`, the helper may run non-prompting
+  `git pull` for an existing checkout or non-prompting `git clone` for a
+  missing checkout.
+- Without auth, a missing linked repository returns non-zero with a clear
+  message instead of prompting for GitHub credentials.
 
 ## How a repository uses it
 

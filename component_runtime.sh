@@ -332,6 +332,7 @@ component_main() {
       --all)             mode="all" ;;
       --select)          mode="select"; select_ids="${2:-}"; shift ;;
       --select=*)        mode="select"; select_ids="${1#*=}" ;;
+      --auth)            INSTALLER_AUTH=1; export INSTALLER_AUTH ;;
       --help|-h)         _isc_usage; return 0 ;;
       *)                 isc_log_warn "ignoring unknown argument: $1"
                          msg "WARN: ignoring unknown argument: $1" ;;

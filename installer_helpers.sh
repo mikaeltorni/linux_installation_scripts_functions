@@ -3,10 +3,10 @@
 #
 # This repository (linux_installation_scripts_functions) owns the reusable
 # installer helpers that every setup repository previously redefined on its own
-# (run_as_target, msg, need_cmd, apt_install, the sudo-skip reporting, and the
-# session-bus / root guards). Consuming installers resolve and source this file
-# via isc_load_helpers (component_loader.sh) instead of vendoring a copy, so a
-# fix here reaches every standalone installer.
+# (run_as_target, msg, need_cmd, apt_install, linked-repository auth gating, the
+# sudo-skip reporting, and the session-bus / root guards). Consuming installers
+# resolve and source this file via isc_load_helpers (component_loader.sh) instead
+# of vendoring a copy, so a fix here reaches every standalone installer.
 #
 # Contract: the caller must define TARGET_USER, TARGET_HOME, RUNTIME_DIR,
 # USER_BUS, and DISPLAY_VAL before invoking run_as_target/ensure_session_bus.
@@ -63,6 +63,55 @@ need_cmd() { isc_log_debug "need_cmd: checking for '$1'"; command -v "$1" >/dev/
 # is_root - Test whether the script runs with root privileges.
 #   Args: none. Returns: 0 when root, non-zero otherwise.
 is_root() { isc_log_debug "is_root: euid=$(id -u)"; [ "$(id -u)" -eq 0 ]; }
+
+# installer_auth_enabled - Test whether authenticated/private Git network
+# operations are explicitly allowed for this run.
+#   Args: none. Returns: 0 when INSTALLER_AUTH=1, non-zero otherwise.
+installer_auth_enabled() { [[ "${INSTALLER_AUTH:-0}" == "1" ]]; }
+
+# ensure_linked_repository - Ensure a linked setup repository checkout exists.
+#
+# Existing sibling checkouts are used as-is by default, avoiding private GitHub
+# credential prompts. Passing --auth through the master/framework runtime sets
+# INSTALLER_AUTH=1, which permits non-prompting git pull for existing checkouts
+# and non-prompting git clone for missing checkouts.
+#
+# Args:
+#   $1 - Human label used in messages.
+#   $2 - Checkout directory path.
+#   $3 - Git clone URL.
+#
+# Returns:
+#   0 when the checkout exists or was cloned; 1 when missing with auth disabled
+#   or when clone/update setup fails.
+ensure_linked_repository() {
+  local label="$1"
+  local repo_dir="$2"
+  local repo_url="$3"
+
+  if [[ -d "$repo_dir/.git" ]]; then
+    if installer_auth_enabled; then
+      msg "Updating existing ${label} repository"
+      isc_log_info "git pull linked repository: ${repo_dir}"
+      run_as_target env GIT_TERMINAL_PROMPT=0 git -C "$repo_dir" pull || true
+    else
+      msg "Using existing ${label} repository (pass --auth to update)"
+      isc_log_info "using linked repository without git pull: ${repo_dir}"
+    fi
+    return 0
+  fi
+
+  if ! installer_auth_enabled; then
+    msg "WARN: ${label} repository not found at '${repo_dir}'; pass --auth or set INSTALLER_AUTH=1 to clone it"
+    isc_log_warn "linked repository missing and auth disabled: ${label} at ${repo_dir}"
+    return 1
+  fi
+
+  msg "Cloning ${label} repository"
+  run_as_target mkdir -p "$(dirname "$repo_dir")"
+  isc_log_info "git clone linked repository: ${repo_url} -> ${repo_dir}"
+  run_as_target env GIT_TERMINAL_PROMPT=0 git clone "$repo_url" "$repo_dir"
+}
 
 # Root-only steps skipped during a non-root run; reported at the end.
 SUDO_REQUIRED_STEPS=()
@@ -128,22 +177,44 @@ apt_install() {
 #   Args: $@ - command and arguments. Returns: the command's exit status.
 run_as_target() {
   isc_log_debug "run_as_target: $*"
-  if [ "$(id -un)" = "$TARGET_USER" ]; then
+  local command_path="${PATH:-}"
+  local system_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  local path_entry
+  local IFS=:
+
+  # sudo can provide a minimal PATH; keep caller entries but guarantee common
+  # system command directories for git, env, bash, mkdir, and sudo.
+  for path_entry in $system_path; do
+    case ":${command_path}:" in
+      *":${path_entry}:"*) ;;
+      *) command_path="${command_path:+${command_path}:}${path_entry}" ;;
+    esac
+  done
+
+  if [ "$(PATH="$command_path" id -un)" = "$TARGET_USER" ]; then
     isc_log_debug "run_as_target: executing directly as $TARGET_USER"
-    env \
+    PATH="$command_path" env \
       HOME="$TARGET_HOME" \
+      PATH="$command_path" \
       USER="$TARGET_USER" \
       LOGNAME="$TARGET_USER" \
+      SUDO_USER= \
+      SUDO_UID= \
+      SUDO_GID= \
       XDG_RUNTIME_DIR="$RUNTIME_DIR" \
       DBUS_SESSION_BUS_ADDRESS="$USER_BUS" \
       DISPLAY="$DISPLAY_VAL" \
       "$@"
   else
     isc_log_debug "run_as_target: executing via sudo as $TARGET_USER"
-    sudo -H -u "$TARGET_USER" env \
+    PATH="$command_path" sudo -H -u "$TARGET_USER" env \
       HOME="$TARGET_HOME" \
+      PATH="$command_path" \
       USER="$TARGET_USER" \
       LOGNAME="$TARGET_USER" \
+      SUDO_USER= \
+      SUDO_UID= \
+      SUDO_GID= \
       XDG_RUNTIME_DIR="$RUNTIME_DIR" \
       DBUS_SESSION_BUS_ADDRESS="$USER_BUS" \
       DISPLAY="$DISPLAY_VAL" \
