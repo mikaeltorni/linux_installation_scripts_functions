@@ -15,21 +15,36 @@
 #   install.sh --help          # usage
 #
 # The manifest is an array named ISC_COMPONENTS whose entries are
-# "id|label|default|function", where default is "on" or "off" and function is
-# the shell function that installs that component (already defined by the
-# repository's sourced libraries):
+# "id|label|default|function[|detect_fn[|uninstall_fn]]", where default is "on"
+# or "off" and function is the shell function that installs that component
+# (already defined by the repository's sourced libraries). The trailing two
+# fields are optional:
+#
+#   detect_fn    - returns 0 when the component is already installed on this
+#                  machine, non-zero otherwise. When omitted, the runtime falls
+#                  back to an install receipt (a marker file written
+#                  automatically after the component's install function
+#                  succeeds), so detection works for every component with no
+#                  per-component code.
+#   uninstall_fn - reverses the component's installation. When omitted, the
+#                  component cannot be uninstalled from the menu (only its
+#                  receipt is cleared). When present, the runtime runs it and
+#                  then clears the receipt.
 #
 #   ISC_REPO_NAME="linux_configuration_setup"
 #   ISC_REPO_LABEL="GNOME desktop configuration"
 #   ISC_COMPONENTS=(
-#     "dark_mode|Dark mode and themes|on|configure_dark_mode"
+#     "dark_mode|Dark mode and themes|on|configure_dark_mode|detect_dark_mode|uninstall_dark_mode"
 #     "easyeffects|EasyEffects EQ presets|off|configure_easyeffects_autostart"
 #   )
 #   component_main "$@"
 #
 # The master installer discovers components with --list-components and drives
 # installation with --select, so disabled repositories are skipped and partially
-# selected repositories install only their chosen components.
+# selected repositories install only their chosen components. It discovers
+# install state with --detect, reverses components with --uninstall, and
+# re-applies configuration of already-installed components with --reconfigure
+# (an idempotent re-run of the install functions).
 #
 # Usage:
 #   source "<dir>/component_runtime.sh"
@@ -77,20 +92,165 @@ fi
 # Returns:
 #   0 and prints the requested field when the id exists; 1 when no entry matches.
 _isc_field() {
-  local want_id="$1" field="$2" entry id label def fn
+  local want_id="$1" field="$2" entry id label def fn detect uninstall
   for entry in "${ISC_COMPONENTS[@]}"; do
-    IFS='|' read -r id label def fn <<<"$entry"
+    IFS='|' read -r id label def fn detect uninstall <<<"$entry"
     if [[ "$id" == "$want_id" ]]; then
       case "$field" in
         0) printf '%s' "$id" ;;
         1) printf '%s' "$label" ;;
         2) printf '%s' "$def" ;;
         3) printf '%s' "$fn" ;;
+        4) printf '%s' "$detect" ;;
+        5) printf '%s' "$uninstall" ;;
       esac
       return 0
     fi
   done
   return 1
+}
+
+###############################################################################
+# Install receipts and detection
+###############################################################################
+
+# Echo the directory that holds this repository's install receipts.
+#
+# Receipts are small marker files (one per installed component id) that let the
+# runtime report install state and drive reconfigure/uninstall without requiring
+# a hand-written detect function for every component. The location follows the
+# XDG state convention and can be overridden with ISC_RECEIPT_DIR for tests.
+#
+# Returns:
+#   0; prints the receipt directory path for ISC_REPO_NAME.
+_isc_receipt_dir() {
+  local base="${ISC_RECEIPT_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/isc/receipts}"
+  printf '%s/%s' "$base" "${ISC_REPO_NAME:-installer}"
+}
+
+# Record that component id $1 is installed by writing its receipt file.
+#
+# Failures are non-fatal: a missing receipt only degrades detection to whatever
+# the component's detect function reports, so installation must never abort here.
+#
+# Arguments:
+#   $1 - component id to mark installed.
+_isc_mark_installed() {
+  local id="$1" dir
+  dir="$(_isc_receipt_dir)"
+  if mkdir -p "$dir" 2>/dev/null; then
+    printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" >"$dir/$id" 2>/dev/null || true
+    isc_log_debug "wrote install receipt for '$id' in $dir"
+  else
+    isc_log_warn "could not create receipt dir $dir for '$id' (detection degraded)"
+  fi
+}
+
+# Remove the install receipt for component id $1 (used on uninstall).
+#
+# Arguments:
+#   $1 - component id whose receipt should be cleared.
+_isc_clear_receipt() {
+  local id="$1" dir
+  dir="$(_isc_receipt_dir)"
+  rm -f "$dir/$id" 2>/dev/null || true
+  isc_log_debug "cleared install receipt for '$id'"
+}
+
+# Decide whether component id $1 is installed on this machine.
+#
+# Prefers the component's detect function (manifest field 4) when defined; this
+# reflects the live system regardless of how the component was installed. Falls
+# back to the install receipt written by a previous installer run.
+#
+# Arguments:
+#   $1 - component id to test.
+#
+# Returns:
+#   0 when the component is installed, 1 otherwise.
+_isc_is_installed() {
+  local id="$1" detect dir
+  detect="$(_isc_field "$id" 4)"
+  if [[ -n "$detect" ]] && declare -F "$detect" >/dev/null 2>&1; then
+    if "$detect"; then return 0; else return 1; fi
+  fi
+  dir="$(_isc_receipt_dir)"
+  [[ -f "$dir/$id" ]]
+}
+
+# Print "id<TAB>installed|absent" for every component, in manifest order.
+# Consumed by the master installer to mark install state in the aggregate menu.
+#
+# Returns:
+#   0; prints one tab-separated state line per component.
+_isc_detect_all() {
+  local id
+  while IFS= read -r id; do
+    [[ -z "$id" ]] && continue
+    if _isc_is_installed "$id"; then
+      printf '%s\tinstalled\n' "$id"
+    else
+      printf '%s\tabsent\n' "$id"
+    fi
+  done < <(_isc_all_ids)
+}
+
+# Run the uninstall functions for the given ids, in reverse manifest order so
+# dependents are removed before dependencies. Components without an uninstall
+# function only have their receipt cleared (with a reported warning). Clears the
+# receipt after a successful uninstall.
+#
+# Arguments:
+#   $1 - whitespace/comma-separated list of component ids to uninstall.
+#
+# Returns:
+#   0 when all requested components were handled; 1 when one or more failed.
+_isc_uninstall_selected() {
+  local selected=" $(tr ',\n' '  ' <<<"$1") "
+  local i entry id label def fn detect un ran=0
+  local -a order=() failed=()
+  isc_log_info "uninstall requested ids:${selected}"
+  for entry in "${ISC_COMPONENTS[@]}"; do
+    IFS='|' read -r id label def fn detect un <<<"$entry"
+    order+=("$id")
+  done
+  for (( i=${#order[@]}-1; i>=0; i-- )); do
+    id="${order[$i]}"
+    [[ "$selected" == *" $id "* ]] || continue
+    label="$(_isc_field "$id" 1)"
+    un="$(_isc_field "$id" 5)"
+    ran=$((ran + 1))
+    if [[ -z "$un" ]]; then
+      isc_log_warn "component '$id' has no uninstall function — clearing receipt only"
+      msg "[$ISC_REPO_NAME] '$label' ($id) has no uninstall step — clearing its install record only."
+      _isc_clear_receipt "$id"
+      continue
+    fi
+    if ! declare -F "$un" >/dev/null 2>&1; then
+      isc_log_warn "uninstall function '$un' for '$id' is not defined — skipping"
+      msg "WARN: uninstall function '$un' for component '$id' is not defined — skipping"
+      failed+=("$id")
+      continue
+    fi
+    isc_log_info "uninstalling component: $label ($id) via $un"
+    msg "[$ISC_REPO_NAME] Uninstalling component: $label ($id)"
+    if ! "$un"; then
+      isc_log_error "uninstall of '$id' failed (continuing)"
+      msg "WARN: uninstall of '$id' failed (continuing)"
+      failed+=("$id")
+    else
+      _isc_clear_receipt "$id"
+      isc_log_info "component '$id' uninstalled"
+    fi
+  done
+  if (( ran == 0 )); then
+    msg "[$ISC_REPO_NAME] No components selected to uninstall — nothing to do."
+  fi
+  if (( ${#failed[@]} > 0 )); then
+    msg "[$ISC_REPO_NAME] Components with uninstall failures: ${failed[*]}"
+    return 1
+  fi
+  return 0
 }
 
 # Echo all component ids in manifest order, one per line.
@@ -153,11 +313,11 @@ _isc_list_components() {
 #   0 when all selected components succeeded; 1 when one or more failed.
 _isc_run_selected() {
   local selected=" $(tr ',\n' '  ' <<<"$1") "
-  local entry id label def fn ran=0
+  local entry id label def fn detect uninstall ran=0
   local -a failed=()
   isc_log_info "run_selected requested ids:${selected}"
   for entry in "${ISC_COMPONENTS[@]}"; do
-    IFS='|' read -r id label def fn <<<"$entry"
+    IFS='|' read -r id label def fn detect uninstall <<<"$entry"
     [[ "$selected" == *" $id "* ]] || continue
     # Run the optional one-time preflight (e.g. ensuring the session bus) just
     # before the first real component, so an empty/unmatched selection is a
@@ -190,6 +350,7 @@ _isc_run_selected() {
       failed+=("$id")
     else
       isc_log_info "component '$id' completed"
+      _isc_mark_installed "$id"
     fi
   done
   # Optional postflight (e.g. audits, sudo-required summaries) after components.
@@ -225,7 +386,11 @@ Usage:
   bash install.sh --default       Install all default-on components, no prompts
   bash install.sh --all           Install every component, no prompts
   bash install.sh --select a,b,c  Install exactly these component ids, no prompts
+  bash install.sh --reconfigure a,b,c  Re-apply config of these (idempotent re-run)
+  bash install.sh --uninstall a,b,c    Uninstall exactly these component ids
+  bash install.sh --auth          Allow authenticated Git clone/pull in components
   bash install.sh --list-components  List components as: id<TAB>label<TAB>default
+  bash install.sh --detect        Show install state as: id<TAB>installed|absent
   bash install.sh --help          Show this help
 
 Components:
@@ -328,10 +493,15 @@ component_main() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --list-components) _isc_list_components; return 0 ;;
+      --detect)          _isc_detect_all; return 0 ;;
       --default)         mode="default" ;;
       --all)             mode="all" ;;
       --select)          mode="select"; select_ids="${2:-}"; shift ;;
       --select=*)        mode="select"; select_ids="${1#*=}" ;;
+      --reconfigure)     mode="select"; select_ids="${2:-}"; shift ;;
+      --reconfigure=*)   mode="select"; select_ids="${1#*=}" ;;
+      --uninstall)       mode="uninstall"; select_ids="${2:-}"; shift ;;
+      --uninstall=*)     mode="uninstall"; select_ids="${1#*=}" ;;
       --auth)            INSTALLER_AUTH=1; export INSTALLER_AUTH ;;
       --help|-h)         _isc_usage; return 0 ;;
       *)                 isc_log_warn "ignoring unknown argument: $1"
@@ -342,9 +512,10 @@ component_main() {
   isc_log_debug "resolved mode='${mode:-interactive}' select_ids='${select_ids}'"
 
   case "$mode" in
-    default) _isc_run_selected "$(_isc_default_ids)"; return $? ;;
-    all)     _isc_run_selected "$(_isc_all_ids)";     return $? ;;
-    select)  _isc_run_selected "$select_ids";         return $? ;;
+    default)   _isc_run_selected "$(_isc_default_ids)"; return $? ;;
+    all)       _isc_run_selected "$(_isc_all_ids)";     return $? ;;
+    select)    _isc_run_selected "$select_ids";         return $? ;;
+    uninstall) _isc_uninstall_selected "$select_ids";   return $? ;;
     "")
       # No mode requested. Use the interactive submenu on a real terminal,
       # otherwise fall back to the default-on set so piped/automated runs work.

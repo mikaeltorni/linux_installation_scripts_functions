@@ -106,7 +106,9 @@ source "$SCRIPT_DIR/installer/components.sh"   # repo-specific manifest
 component_main "$@"
 ```
 
-The manifest maps component ids to the installer's own step functions:
+The manifest maps component ids to the installer's own step functions. Each
+entry is `id|label|default|install_fn[|detect_fn[|uninstall_fn]]`; the last two
+fields are optional:
 
 ```bash
 ISC_REPO_NAME="example_repo"
@@ -114,10 +116,22 @@ ISC_REPO_LABEL="Example repository"
 ISC_PREFLIGHT="ensure_session_bus"     # optional, runs once before components
 ISC_POSTFLIGHT="report_sudo_required"  # optional, runs once after components
 ISC_COMPONENTS=(
-  "feature_a|Human label for A|on|install_feature_a"
+  "feature_a|Human label for A|on|install_feature_a|detect_feature_a|uninstall_feature_a"
   "feature_b|Human label for B|off|install_feature_b"
 )
 ```
+
+* `detect_fn` returns 0 when the component is already installed on this machine.
+  When omitted, detection falls back to an **install receipt** — a marker file
+  the runtime writes automatically after the install function succeeds (under
+  `${XDG_STATE_HOME:-~/.local/state}/isc/receipts/<repo>/<id>`), so detection
+  works for every component with no extra code.
+* `uninstall_fn` reverses the installation. When omitted, the component cannot be
+  reversed from the menu; its `[u]` action only clears the receipt (a safe,
+  non-destructive fallback for components whose reversal would be ambiguous).
+
+The runtime writes a receipt after each successful install and clears it after a
+successful uninstall, so install state stays accurate across runs.
 
 ### Resulting command-line contract
 
@@ -126,7 +140,10 @@ bash install.sh                  # interactive submenu on a TTY, else defaults
 bash install.sh --default        # install all default-on components, no prompts
 bash install.sh --all            # install every component, no prompts
 bash install.sh --select a,b     # install exactly these component ids
+bash install.sh --reconfigure a  # re-apply (idempotent re-run) of these ids
+bash install.sh --uninstall a,b  # uninstall exactly these component ids
 bash install.sh --list-components  # print: id<TAB>label<TAB>default
+bash install.sh --detect         # print: id<TAB>installed|absent
 ```
 
 ## Resolution order
