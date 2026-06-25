@@ -94,6 +94,35 @@ def test_detect_reports_receipt_state(tmp_path):
     assert after["beta"] == "absent"
 
 
+def test_receipts_default_to_target_home_when_running_for_target_user(tmp_path):
+    """Sudo-driven installers write receipts under the desktop user's state."""
+    target_home = tmp_path / "target-home"
+    root_home = tmp_path / "root-home"
+    target_home.mkdir()
+    root_home.mkdir()
+    script = f"""
+set -uo pipefail
+export HOME="{root_home}"
+export TARGET_HOME="{target_home}"
+source "{REPO}/component_runtime.sh"
+comp_a() {{ :; }}
+ISC_REPO_NAME="demo"
+ISC_REPO_LABEL="Demo"
+ISC_COMPONENTS=("alpha|Alpha|on|comp_a")
+component_main "$@"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script, "bash", "--select", "alpha"],
+        cwd=REPO,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (target_home / ".local/state/isc/receipts/demo/alpha").is_file()
+    assert not (root_home / ".local/state/isc/receipts/demo/alpha").exists()
+
+
 def test_detect_prefers_detect_function(tmp_path):
     """A component with a detect function reflects live state, not the receipt."""
     rd = tmp_path / "receipts"
