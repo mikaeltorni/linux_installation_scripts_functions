@@ -124,7 +124,20 @@ _isc_field() {
 # Returns:
 #   0; prints the receipt directory path for ISC_REPO_NAME.
 _isc_receipt_dir() {
-  local base="${ISC_RECEIPT_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/isc/receipts}"
+  local state_home
+  if [[ -n "${ISC_RECEIPT_DIR:-}" ]]; then
+    printf '%s/%s' "$ISC_RECEIPT_DIR" "${ISC_REPO_NAME:-installer}"
+    return 0
+  fi
+  state_home="${XDG_STATE_HOME:-}"
+  if [[ -z "$state_home" ]]; then
+    # Setup installers can run as root while applying user-level work through
+    # run_as_target. Component receipts describe the target user's install state,
+    # so default them to TARGET_HOME instead of /root when no explicit XDG state
+    # override is present.
+    state_home="${TARGET_HOME:-$HOME}/.local/state"
+  fi
+  local base="${state_home}/isc/receipts"
   printf '%s/%s' "$base" "${ISC_REPO_NAME:-installer}"
 }
 
