@@ -185,7 +185,7 @@ _isc_is_installed() {
   local id="$1" detect dir
   detect="$(_isc_field "$id" 4)"
   if [[ -n "$detect" ]] && declare -F "$detect" >/dev/null 2>&1; then
-    if "$detect"; then return 0; else return 1; fi
+    if "$detect"; then return 0; fi
   fi
   dir="$(_isc_receipt_dir)"
   [[ -f "$dir/$id" ]]
