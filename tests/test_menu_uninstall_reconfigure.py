@@ -24,6 +24,7 @@ KEYS = {
     "U": "u",
     "R": "r",
     "F": "f",
+    "S": "s",
     "ENTER": "\n",
     "Q": "q",
 }
@@ -56,11 +57,16 @@ CM_COMP_FAVORITE_ELIGIBLE[$repo|alpha]=1
 CM_COMP_FAVORITE_ELIGIBLE[$repo|beta]=1
 CM_COMP_FAVORITE_ON[$repo|alpha]=0
 CM_COMP_FAVORITE_ON[$repo|beta]=1
+CM_COMP_STARTUP_ELIGIBLE[$repo|alpha]=1
+CM_COMP_STARTUP_ELIGIBLE[$repo|beta]=1
+CM_COMP_STARTUP_ON[$repo|alpha]=0
+CM_COMP_STARTUP_ON[$repo|beta]=1
 cm_single_submenu "$repo" >/dev/null 2>&1
 for id in alpha beta; do
   printf '%s.on=%s\\n' "$id" "${{CM_COMP_ON[$repo|$id]:-}}"
   printf '%s.uninstall=%s\\n' "$id" "${{CM_COMP_UNINSTALL[$repo|$id]:-}}"
   printf '%s.favorite=%s\\n' "$id" "${{CM_COMP_FAVORITE_ON[$repo|$id]:-}}"
+  printf '%s.startup=%s\\n' "$id" "${{CM_COMP_STARTUP_ON[$repo|$id]:-}}"
 done
 """
     result = subprocess.run(
@@ -83,12 +89,13 @@ def test_space_reconfigures_installed_component():
 
 
 def test_u_marks_installed_for_uninstall_and_clears_apply():
-    """[u] on alpha marks uninstall and clears apply/favourite selection."""
+    """[u] clears apply, favourite, and startup selection."""
     # SPACE first selects reconfigure, then U must flip to uninstall.
-    state = drive(["F", "SPACE", "U", "ENTER"])
+    state = drive(["F", "S", "SPACE", "U", "ENTER"])
     assert state["alpha.uninstall"] == "1"
     assert state["alpha.on"] == "0"
     assert state["alpha.favorite"] == "0"
+    assert state["alpha.startup"] == "0"
 
 
 def test_u_is_ignored_for_absent_component():
@@ -119,6 +126,46 @@ def test_f_toggles_existing_favorite_off():
     state = drive(["DOWN", "F", "ENTER"])
     assert state["beta.favorite"] == "0"
     assert state["beta.on"] == "1"
+
+
+def test_s_toggles_startup_without_changing_install_selection():
+    """[s] toggles startup independently of install and favourite state."""
+    state = drive(["S", "ENTER"])
+    assert state["alpha.startup"] == "1"
+    assert state["alpha.favorite"] == "0"
+    assert state["alpha.on"] == "0"
+
+
+def test_s_toggles_existing_startup_off():
+    """[s] can remove startup from an absent selected component."""
+    state = drive(["DOWN", "S", "ENTER"])
+    assert state["beta.startup"] == "0"
+    assert state["beta.on"] == "1"
+
+
+def test_submenu_renders_combined_favorite_and_startup_marker():
+    """A component selected for both actions should display the compact FS marker."""
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_REPO_LABEL[$repo]=Demo
+CM_COMP_IDS[$repo]="alpha"
+CM_COMP_LABEL[$repo|alpha]=Alpha
+CM_COMP_ON[$repo|alpha]=1
+CM_COMP_FAVORITE_ON[$repo|alpha]=1
+CM_COMP_STARTUP_ON[$repo|alpha]=1
+out="$(cm_render_submenu "$repo" 0 "Configure components" "[s] startup")"
+printf '%s' "$out"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=REPO, check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    assert "[FS] Alpha" in plain
+    assert "[s] startup" in plain
 
 
 def test_submenu_render_scrolls_long_component_lists():
@@ -239,6 +286,35 @@ printf '%s' "$out"
     assert result.returncode == 0, result.stderr
     assert "Alpha" in result.stdout
     assert "Beta" in result.stdout
+    assert result.stdout.count("›") == 1
+
+
+def test_submenu_renders_named_sections_in_component_order():
+    """Section metadata should render headings without becoming selectable rows."""
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_REPO_LABEL[$repo]=Demo
+CM_COMP_IDS[$repo]="model app plugin"
+CM_COMP_LABEL[$repo|model]="Ornstein model"
+CM_COMP_LABEL[$repo|app]="Codex CLI"
+CM_COMP_LABEL[$repo|plugin]="Commit plugin"
+CM_COMP_SECTION[$repo|model]="Models"
+CM_COMP_SECTION[$repo|app]="Agent tools"
+CM_COMP_SECTION[$repo|plugin]="Plugins"
+for id in model app plugin; do CM_COMP_ON[$repo|$id]=1; done
+out="$(LINES=20 cm_render_submenu "$repo" 0 "Configure components" "footer")"
+printf '%s' "$out"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=REPO, check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.index("Models") < result.stdout.index("Ornstein model")
+    assert result.stdout.index("Agent tools") < result.stdout.index("Codex CLI")
+    assert result.stdout.index("Plugins") < result.stdout.index("Commit plugin")
     assert result.stdout.count("›") == 1
 
 

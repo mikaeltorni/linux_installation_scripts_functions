@@ -15,6 +15,7 @@
 #   CM_REPO_ENABLED[repo] - 1 when the whole repo is enabled, 0 when disabled
 #   CM_COMP_IDS[repo]     - space-separated component ids belonging to a repo
 #   CM_COMP_LABEL[repo|id]- human label for a component
+#   CM_COMP_SECTION[repo|id] - optional visual section heading
 #   CM_COMP_ON[repo|id]   - 1 when that component is selected, 0 otherwise
 #   CM_COMP_INSTALLED[repo|id] - 1 when already installed on this machine
 #                           (optional; defaults to 0 — drives the install-state
@@ -25,6 +26,9 @@
 #                           GNOME favourite app from the program menu
 #   CM_COMP_FAVORITE_ON[repo|id] - 1 when the component should be included in
 #                           the generated favourite-apps list
+#   CM_COMP_STARTUP_ELIGIBLE[repo|id] - 1 when a component can be launched
+#                           automatically at desktop login
+#   CM_COMP_STARTUP_ON[repo|id] - 1 when startup is selected for the component
 #   ISC_MENU_DEBUG       - 1 enables debug-only menu helpers such as [l] state
 #                           logging in the aggregate menu
 #
@@ -32,9 +36,10 @@
 #   [ ] absent, will be skipped          [x] absent, will be installed
 #   [✓] installed, left as-is            [~] installed, will be reconfigured
 #   [✗] installed, will be uninstalled
-#   [F] app component selected for dock favourites
-# SPACE toggles install/reconfigure, [f] toggles dock favourite selection for
-# eligible app components, [u] toggles uninstall of an installed component, and
+#   [F] app selected for dock favourites  [S] selected for startup
+#   [FS] app selected for both favourite and startup
+# SPACE toggles install/reconfigure, [f] toggles dock favourite selection and
+# [s] toggles startup for eligible apps, [u] toggles uninstall, and
 # [r] marks every installed component for reconfigure. In aggregate-menu debug
 # mode, [l] writes a quiet component state snapshot to the framework log file.
 #
@@ -78,9 +83,10 @@ fi
 
 # Associative state shared with callers. Declared here so sourcing alone makes
 # them available; callers may also declare them, which is harmless.
-declare -gA CM_REPO_LABEL CM_REPO_ENABLED CM_COMP_IDS CM_COMP_LABEL CM_COMP_ON 2>/dev/null || true
+declare -gA CM_REPO_LABEL CM_REPO_ENABLED CM_COMP_IDS CM_COMP_LABEL CM_COMP_SECTION CM_COMP_ON 2>/dev/null || true
 declare -gA CM_COMP_INSTALLED CM_COMP_UNINSTALL 2>/dev/null || true
 declare -gA CM_COMP_FAVORITE_ELIGIBLE CM_COMP_FAVORITE_ON 2>/dev/null || true
+declare -gA CM_COMP_STARTUP_ELIGIBLE CM_COMP_STARTUP_ON 2>/dev/null || true
 declare -ga CM_REPOS 2>/dev/null || true
 
 ###############################################################################
@@ -99,7 +105,7 @@ cm_clear() { printf '\033[2J\033[H'; }
 # Read a single keypress and echo a normalized token.
 #
 # Returns one of: UP DOWN LEFT RIGHT SPACE ENTER ESC QUIT ALL NONE FAVORITE
-# UNINSTALL RECONFIG LOG OTHER.
+# STARTUP UNINSTALL RECONFIG LOG OTHER.
 cm_read_key() {
   local key rest
   IFS= read -rsn1 key 2>/dev/null || { echo QUIT; return; }
@@ -123,6 +129,7 @@ cm_read_key() {
     a|A) echo ALL ;;
     n|N) echo NONE ;;
     f|F) echo FAVORITE ;;
+    s|S) echo STARTUP ;;
     u|U) echo UNINSTALL ;;
     r|R) echo RECONFIG ;;
     l|L) echo LOG ;;
@@ -234,7 +241,7 @@ cm_component_state() {
 # Returns:
 #   0 always.
 cm_log_component_state_snapshot() {
-  local repo id state label enabled selected total installed favorite
+  local repo id state label enabled selected total installed favorite startup
   isc_log_info "component state snapshot begin"
   for repo in "${CM_REPOS[@]}"; do
     [[ -n "$repo" ]] || continue
@@ -248,7 +255,8 @@ cm_log_component_state_snapshot() {
       state="$(cm_component_state "$repo" "$id")"
       label="${CM_COMP_LABEL[$repo|$id]:-$id}"
       favorite="${CM_COMP_FAVORITE_ON[$repo|$id]:-0}"
-      isc_log_info "component_state repo=$repo component=$id label=$label state=$state favorite=$favorite selected=${CM_COMP_ON[$repo|$id]:-0} installed=${CM_COMP_INSTALLED[$repo|$id]:-0} uninstall=${CM_COMP_UNINSTALL[$repo|$id]:-0}"
+      startup="${CM_COMP_STARTUP_ON[$repo|$id]:-0}"
+      isc_log_info "component_state repo=$repo component=$id label=$label state=$state favorite=$favorite startup=$startup selected=${CM_COMP_ON[$repo|$id]:-0} installed=${CM_COMP_INSTALLED[$repo|$id]:-0} uninstall=${CM_COMP_UNINSTALL[$repo|$id]:-0}"
     done
   done
   isc_log_info "component state snapshot end"
@@ -269,7 +277,8 @@ cm_render_submenu() {
   local repo="$1" sel="$2" title="$3" footer="$4"
   local -a ids=()
   local i id mark box label on total inst tag term_rows chrome_rows footer_rows
-  local visible_rows offset end indicators
+  local favorite startup action_label
+  local visible_rows offset end indicators section section_count=0 previous_section=""
   cm_comp_ids_for_repo "$repo" ids
   if (( ${#ids[@]} > 0 )); then
     if (( sel < 0 )); then sel=0; fi
@@ -286,7 +295,17 @@ cm_render_submenu() {
   # line each so the selected row never renders past the terminal bottom.
   chrome_rows=4
   footer_rows=2
-  visible_rows=$((term_rows - chrome_rows - footer_rows))
+  # Reserve one line for every named section. This is conservative while
+  # scrolling (not every section is visible), but guarantees headings never
+  # push the footer beyond the terminal.
+  for id in "${ids[@]}"; do
+    section="${CM_COMP_SECTION[$repo|$id]:-}"
+    if [[ -n "$section" && "$section" != "$previous_section" ]]; then
+      section_count=$((section_count + 1))
+    fi
+    previous_section="$section"
+  done
+  visible_rows=$((term_rows - chrome_rows - footer_rows - section_count))
   (( visible_rows < 1 )) && visible_rows=1
   offset=0
   if (( sel >= visible_rows )); then
@@ -298,7 +317,7 @@ cm_render_submenu() {
   (( offset > 0 )) && indicators=$((indicators + 1))
   (( end < ${#ids[@]} )) && indicators=$((indicators + 1))
   if (( indicators > 0 )); then
-    visible_rows=$((term_rows - chrome_rows - footer_rows - indicators))
+    visible_rows=$((term_rows - chrome_rows - footer_rows - indicators - section_count))
     (( visible_rows < 1 )) && visible_rows=1
     offset=0
     if (( sel >= visible_rows )); then
@@ -320,17 +339,38 @@ cm_render_submenu() {
   fi
   for ((i = offset; i < end; i++)); do
     id="${ids[$i]}"
+    section="${CM_COMP_SECTION[$repo|$id]:-}"
+    if [[ -n "$section" ]]; then
+      previous_section=""
+      if (( i > offset )); then
+        previous_section="${CM_COMP_SECTION[$repo|${ids[$((i - 1))]}]:-}"
+      fi
+      if (( i == offset )) || [[ "$section" != "$previous_section" ]]; then
+        printf '      \033[1;34m%s\033[0m\n' "$section"
+      fi
+    fi
     if [[ "$i" == "$sel" ]]; then mark='\033[36m›\033[0m'; else mark=' '; fi
     label="${CM_COMP_LABEL[$repo|$id]:-$id}"
     tag=''
+    favorite="${CM_COMP_FAVORITE_ON[$repo|$id]:-0}"
+    startup="${CM_COMP_STARTUP_ON[$repo|$id]:-0}"
     if [[ "${CM_COMP_UNINSTALL[$repo|$id]:-0}" == "1" ]]; then
       box='[\033[31m✗\033[0m]'; tag=' \033[31m(uninstall)\033[0m'
-    elif [[ "${CM_COMP_FAVORITE_ON[$repo|$id]:-0}" == "1" ]]; then
-      box='[\033[36mF\033[0m]'
-      if [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]]; then
-        tag=' \033[2m(installed, favourite)\033[0m'
+    elif [[ "$favorite" == "1" || "$startup" == "1" ]]; then
+      if [[ "$favorite" == "1" && "$startup" == "1" ]]; then
+        box='[\033[36mFS\033[0m]'
+        action_label='favourite, startup'
+      elif [[ "$favorite" == "1" ]]; then
+        box='[\033[36mF\033[0m]'
+        action_label='favourite'
       else
-        tag=' \033[36m(favourite)\033[0m'
+        box='[\033[35mS\033[0m]'
+        action_label='startup'
+      fi
+      if [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]]; then
+        tag=" \\033[2m(installed, $action_label)\\033[0m"
+      else
+        tag=" \\033[36m($action_label)\\033[0m"
       fi
     elif [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]]; then
       if [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then
@@ -365,9 +405,9 @@ cm_submenu_loop() {
   cm_comp_ids_for_repo "$repo" ids
   title="Configure components"
   if [[ "$mode" == "standalone" ]]; then
-    footer="[↑/↓] move  [space] toggle  [f] favourite  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [enter] apply  [q] cancel"
+    footer="[↑/↓] move  [space] toggle  [f] favourite  [s] startup  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [enter] apply  [q] cancel"
   else
-    footer="[↑/↓] move  [space] toggle  [f] favourite  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [←/enter] back"
+    footer="[↑/↓] move  [space] toggle  [f] favourite  [s] startup  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [←/enter] back"
     cm_show_cursor
   fi
   if (( ${#ids[@]} == 0 )); then
@@ -410,6 +450,7 @@ cm_submenu_loop() {
           CM_COMP_UNINSTALL[$repo|$id]=1
           CM_COMP_ON[$repo|$id]=0
           CM_COMP_FAVORITE_ON[$repo|$id]=0
+          CM_COMP_STARTUP_ON[$repo|$id]=0
         fi
         ;;
       FAVORITE)
@@ -421,6 +462,17 @@ cm_submenu_loop() {
           CM_COMP_FAVORITE_ON[$repo|$id]=0
         else
           CM_COMP_FAVORITE_ON[$repo|$id]=1
+        fi
+        ;;
+      STARTUP)
+        id="${ids[$sel]:-}"
+        [[ -z "$id" ]] && continue
+        [[ "${CM_COMP_STARTUP_ELIGIBLE[$repo|$id]:-0}" == "1" ]] || continue
+        CM_COMP_UNINSTALL[$repo|$id]=0
+        if [[ "${CM_COMP_STARTUP_ON[$repo|$id]:-0}" == "1" ]]; then
+          CM_COMP_STARTUP_ON[$repo|$id]=0
+        else
+          CM_COMP_STARTUP_ON[$repo|$id]=1
         fi
         ;;
       RECONFIG)

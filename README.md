@@ -48,7 +48,7 @@ bash install.sh                  # interactive submenu on a TTY, else defaults
 bash install.sh --default        # core + all default-on modules, no prompts
 bash install.sh --all            # core + every module, no prompts
 bash install.sh --select menu    # core + exactly these module ids
-bash install.sh --list-components  # print: id<TAB>label<TAB>default
+bash install.sh --list-components  # print: id<TAB>label<TAB>default[<TAB>section]
 ```
 
 **Core (always installed, never deselectable).** Installed unconditionally so
@@ -107,8 +107,9 @@ component_main "$@"
 ```
 
 The manifest maps component ids to the installer's own step functions. Each
-entry is `id|label|default|install_fn[|detect_fn[|uninstall_fn]]`; the last two
-fields are optional:
+entry is
+`id|label|default|install_fn[|detect_fn[|uninstall_fn[|section]]]`; the final
+three fields are optional:
 
 ```bash
 ISC_REPO_NAME="example_repo"
@@ -117,7 +118,7 @@ ISC_PREFLIGHT="ensure_session_bus"     # optional, runs once before components
 ISC_POSTFLIGHT="report_sudo_required"  # optional, runs once after components
 ISC_COMPONENTS=(
   "feature_a|Human label for A|on|install_feature_a|detect_feature_a|uninstall_feature_a"
-  "feature_b|Human label for B|off|install_feature_b"
+  "feature_b|Human label for B|off|install_feature_b|||Models"
 )
 ```
 
@@ -129,6 +130,9 @@ ISC_COMPONENTS=(
 * `uninstall_fn` reverses the installation. When omitted, the component cannot be
   reversed from the menu; its `[u]` action only clears the receipt (a safe,
   non-destructive fallback for components whose reversal would be ambiguous).
+* `section` is a visual heading only. Components remain selectable rows and
+  execute in manifest order; repositories can put a `Models` section first
+  without introducing pseudo-components.
 
 The runtime writes a receipt after each successful install and clears it after a
 successful uninstall, so install state stays accurate across runs.
@@ -142,15 +146,16 @@ bash install.sh --all            # install every component, no prompts
 bash install.sh --select a,b     # install exactly these component ids
 bash install.sh --reconfigure a  # re-apply (idempotent re-run) of these ids
 bash install.sh --uninstall a,b  # uninstall exactly these component ids
-bash install.sh --list-components  # print: id<TAB>label<TAB>default
+bash install.sh --list-components  # print: id<TAB>label<TAB>default[<TAB>section]
 bash install.sh --detect         # print: id<TAB>installed|absent
 ```
 
 In the interactive submenu, already-installed components show a `✓`; `space`
 selects an installed component for **reconfigure** (`~`), `[u]` marks it for
-**uninstall** (`✗`), `[r]` marks every installed component for reconfigure, and
-`[f]` toggles GNOME dock favourite selection for app components that expose
-favourite metadata. Favourite-selected rows show `F` instead of `x`.
+**uninstall** (`✗`), `[r]` marks every installed component for reconfigure,
+`[f]` toggles GNOME dock favourite selection, and `[s]` toggles launch at
+desktop login for app components that expose the corresponding metadata. Rows
+show `F`, `S`, or `FS` when either or both app actions are selected.
 
 In the aggregate master menu, setting `ISC_MENU_DEBUG=1` exposes `[l] log state`.
 That action writes a quiet snapshot of every repository and component state

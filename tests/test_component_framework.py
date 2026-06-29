@@ -72,6 +72,23 @@ def test_list_components_format():
     assert lines == ["alpha\tAlpha\ton", "beta\tBeta\ton", "gamma\tGamma\toff"], out
 
 
+def test_list_components_includes_optional_section_metadata():
+    """A seventh manifest field should expose a fourth section column."""
+    section_harness = HARNESS.replace(
+        '"alpha|Alpha|on|comp_a"', '"alpha|Alpha|on|comp_a|||Models"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", section_harness, "bash", "--list-components"],
+        cwd=REPO,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[0] == "alpha\tAlpha\ton\tModels"
+
+
 def test_default_runs_only_default_on():
     """--default should run default-on components and skip default-off ones."""
     rc, out = run(["--default"])

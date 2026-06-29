@@ -11,13 +11,13 @@
 #   install.sh --default       # install every default-on component, no prompts
 #   install.sh --all           # install every component, no prompts
 #   install.sh --select a,b,c  # install exactly these component ids, no prompts
-#   install.sh --list-components  # print "id\tlabel\tdefault" lines and exit
+#   install.sh --list-components  # print "id\tlabel\tdefault[\tsection]" lines
 #   install.sh --help          # usage
 #
 # The manifest is an array named ISC_COMPONENTS whose entries are
-# "id|label|default|function[|detect_fn[|uninstall_fn]]", where default is "on"
+# "id|label|default|function[|detect_fn[|uninstall_fn[|section]]]", where default is "on"
 # or "off" and function is the shell function that installs that component
-# (already defined by the repository's sourced libraries). The trailing two
+# (already defined by the repository's sourced libraries). The trailing three
 # fields are optional:
 #
 #   detect_fn    - returns 0 when the component is already installed on this
@@ -30,6 +30,8 @@
 #                  component cannot be uninstalled from the menu (only its
 #                  receipt is cleared). When present, the runtime runs it and
 #                  then clears the receipt.
+#   section      - optional visual heading in the component menu. It does not
+#                  affect selection or execution order.
 #
 #   ISC_REPO_NAME="linux_configuration_setup"
 #   ISC_REPO_LABEL="GNOME desktop configuration"
@@ -87,14 +89,15 @@ fi
 #
 # Arguments:
 #   $1 - component id to look up.
-#   $2 - field index: 0=id, 1=label, 2=default, 3=function.
+#   $2 - field index: 0=id, 1=label, 2=default, 3=function, 4=detect,
+#        5=uninstall, 6=section.
 #
 # Returns:
 #   0 and prints the requested field when the id exists; 1 when no entry matches.
 _isc_field() {
-  local want_id="$1" field="$2" entry id label def fn detect uninstall
+  local want_id="$1" field="$2" entry id label def fn detect uninstall section
   for entry in "${ISC_COMPONENTS[@]}"; do
-    IFS='|' read -r id label def fn detect uninstall <<<"$entry"
+    IFS='|' read -r id label def fn detect uninstall section <<<"$entry"
     if [[ "$id" == "$want_id" ]]; then
       case "$field" in
         0) printf '%s' "$id" ;;
@@ -103,6 +106,7 @@ _isc_field() {
         3) printf '%s' "$fn" ;;
         4) printf '%s' "$detect" ;;
         5) printf '%s' "$uninstall" ;;
+        6) printf '%s' "$section" ;;
       esac
       return 0
     fi
@@ -300,8 +304,8 @@ _isc_default_ids() {
 # Sub-commands
 ###############################################################################
 
-# Print "id<TAB>label<TAB>default" for every component. Consumed by the master
-# installer to build the aggregate menu without sourcing repo internals.
+# Print "id<TAB>label<TAB>default[<TAB>section]" for every component. Consumed
+# by the master installer to build the aggregate menu without sourcing internals.
 #
 # Arguments:
 #   none (reads the ISC_COMPONENTS manifest).
@@ -309,10 +313,14 @@ _isc_default_ids() {
 # Returns:
 #   0; prints one tab-separated line per component.
 _isc_list_components() {
-  local entry id label def rest
+  local entry id label def fn detect uninstall section
   for entry in "${ISC_COMPONENTS[@]}"; do
-    IFS='|' read -r id label def rest <<<"$entry"
-    printf '%s\t%s\t%s\n' "$id" "$label" "$def"
+    IFS='|' read -r id label def fn detect uninstall section <<<"$entry"
+    if [[ -n "$section" ]]; then
+      printf '%s\t%s\t%s\t%s\n' "$id" "$label" "$def" "$section"
+    else
+      printf '%s\t%s\t%s\n' "$id" "$label" "$def"
+    fi
   done
 }
 
@@ -402,7 +410,7 @@ Usage:
   bash install.sh --reconfigure a,b,c  Re-apply config of these (idempotent re-run)
   bash install.sh --uninstall a,b,c    Uninstall exactly these component ids
   bash install.sh --auth          Allow authenticated Git clone/pull in components
-  bash install.sh --list-components  List components as: id<TAB>label<TAB>default
+  bash install.sh --list-components  List: id<TAB>label<TAB>default[<TAB>section]
   bash install.sh --detect        Show install state as: id<TAB>installed|absent
   bash install.sh --help          Show this help
 
@@ -467,6 +475,7 @@ _isc_interactive_select() {
     [[ -z "$id" ]] && continue
     ids+="$id "
     CM_COMP_LABEL[$repo|$id]="$(_isc_field "$id" 1)"
+    CM_COMP_SECTION[$repo|$id]="$(_isc_field "$id" 6)"
     CM_COMP_UNINSTALL[$repo|$id]=0
     # Reflect live install state so the menu can show installed/reconfigure
     # markers and offer uninstall. Already-installed components default to
