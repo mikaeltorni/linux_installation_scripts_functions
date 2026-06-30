@@ -261,6 +261,90 @@ printf 'alpha=%s beta=%s\\n' "${{CM_COMP_ON[$repo|alpha]:-0}}" "${{CM_COMP_ON[$r
     assert "beta=0" in result.stdout
 
 
+def test_dependent_component_is_disabled_until_requirement_is_selected():
+    """A dependency row cannot be selected while its required CLI is absent."""
+    keystream = KEYS["DOWN"] + KEYS["SPACE"] + KEYS["ENTER"]
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_REPO_LABEL[$repo]=Demo
+CM_COMP_IDS[$repo]="cli status"
+CM_COMP_LABEL[$repo|cli]="CLI"
+CM_COMP_LABEL[$repo|status]="Status bar"
+CM_COMP_REQUIRES[$repo|status]="cli"
+CM_COMP_ON[$repo|cli]=0
+CM_COMP_ON[$repo|status]=0
+CM_COMP_INSTALLED[$repo|cli]=0
+CM_COMP_INSTALLED[$repo|status]=0
+cm_submenu_loop "$repo" embedded >/dev/null
+printf 'cli=%s status=%s\n' "${{CM_COMP_ON[$repo|cli]:-0}}" "${{CM_COMP_ON[$repo|status]:-0}}"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=REPO, input=keystream,
+        check=False, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "cli=0 status=0" in result.stdout
+
+
+def test_dependent_component_accepts_autodetected_installed_requirement():
+    """An already-installed CLI unlocks its dependent during modification."""
+    keystream = KEYS["DOWN"] + KEYS["SPACE"] + KEYS["ENTER"]
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_REPO_LABEL[$repo]=Demo
+CM_COMP_IDS[$repo]="cli status"
+CM_COMP_LABEL[$repo|cli]="CLI"
+CM_COMP_LABEL[$repo|status]="Status bar"
+CM_COMP_REQUIRES[$repo|status]="cli"
+CM_COMP_ON[$repo|cli]=0
+CM_COMP_ON[$repo|status]=0
+CM_COMP_INSTALLED[$repo|cli]=1
+CM_COMP_INSTALLED[$repo|status]=0
+cm_submenu_loop "$repo" embedded >/dev/null
+printf 'cli=%s status=%s\n' "${{CM_COMP_ON[$repo|cli]:-0}}" "${{CM_COMP_ON[$repo|status]:-0}}"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=REPO, input=keystream,
+        check=False, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "cli=0 status=1" in result.stdout
+
+
+def test_deselecting_requirement_clears_pending_dependent_selection():
+    """Turning off a CLI must also clear its not-yet-installed dependent."""
+    keystream = KEYS["SPACE"] + KEYS["ENTER"]
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_REPO_LABEL[$repo]=Demo
+CM_COMP_IDS[$repo]="cli status"
+CM_COMP_LABEL[$repo|cli]="CLI"
+CM_COMP_LABEL[$repo|status]="Status bar"
+CM_COMP_REQUIRES[$repo|status]="cli"
+CM_COMP_ON[$repo|cli]=1
+CM_COMP_ON[$repo|status]=1
+CM_COMP_INSTALLED[$repo|cli]=0
+CM_COMP_INSTALLED[$repo|status]=0
+cm_submenu_loop "$repo" embedded >/dev/null
+printf 'cli=%s status=%s\n' "${{CM_COMP_ON[$repo|cli]:-0}}" "${{CM_COMP_ON[$repo|status]:-0}}"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=REPO, input=keystream,
+        check=False, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "cli=0 status=0" in result.stdout
+
+
 def test_submenu_skips_blank_component_ids():
     """Blank ids from malformed manifests must not create dead menu rows."""
     script = f"""

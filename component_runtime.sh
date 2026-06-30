@@ -15,9 +15,9 @@
 #   install.sh --help          # usage
 #
 # The manifest is an array named ISC_COMPONENTS whose entries are
-# "id|label|default|function[|detect_fn[|uninstall_fn[|section]]]", where default is "on"
+# "id|label|default|function[|detect_fn[|uninstall_fn[|section[|requires]]]]", where default is "on"
 # or "off" and function is the shell function that installs that component
-# (already defined by the repository's sourced libraries). The trailing three
+# (already defined by the repository's sourced libraries). The trailing four
 # fields are optional:
 #
 #   detect_fn    - returns 0 when the component is already installed on this
@@ -30,8 +30,10 @@
 #                  component cannot be uninstalled from the menu (only its
 #                  receipt is cleared). When present, the runtime runs it and
 #                  then clears the receipt.
-#   section      - optional visual heading in the component menu. It does not
-#                  affect selection or execution order.
+#   section      - optional visual heading in the component menu.
+#   requires     - optional comma-separated component ids. A dependent can be
+#                  selected only when every requirement is selected in the same
+#                  run or detected as already installed.
 #
 #   ISC_REPO_NAME="linux_configuration_setup"
 #   ISC_REPO_LABEL="GNOME desktop configuration"
@@ -90,14 +92,14 @@ fi
 # Arguments:
 #   $1 - component id to look up.
 #   $2 - field index: 0=id, 1=label, 2=default, 3=function, 4=detect,
-#        5=uninstall, 6=section.
+#        5=uninstall, 6=section, 7=requires.
 #
 # Returns:
 #   0 and prints the requested field when the id exists; 1 when no entry matches.
 _isc_field() {
-  local want_id="$1" field="$2" entry id label def fn detect uninstall section
+  local want_id="$1" field="$2" entry id label def fn detect uninstall section requires
   for entry in "${ISC_COMPONENTS[@]}"; do
-    IFS='|' read -r id label def fn detect uninstall section <<<"$entry"
+    IFS='|' read -r id label def fn detect uninstall section requires <<<"$entry"
     if [[ "$id" == "$want_id" ]]; then
       case "$field" in
         0) printf '%s' "$id" ;;
@@ -107,6 +109,7 @@ _isc_field() {
         4) printf '%s' "$detect" ;;
         5) printf '%s' "$uninstall" ;;
         6) printf '%s' "$section" ;;
+        7) printf '%s' "$requires" ;;
       esac
       return 0
     fi
@@ -176,9 +179,9 @@ _isc_clear_receipt() {
 
 # Decide whether component id $1 is installed on this machine.
 #
-# Prefers the component's detect function (manifest field 4) when defined; this
-# reflects the live system regardless of how the component was installed. Falls
-# back to the install receipt written by a previous installer run.
+# Uses the component's detect function (manifest field 4) as the authoritative
+# live result when defined. Falls back to an install receipt only when no custom
+# detector exists, so stale receipts never mask a removed or broken feature.
 #
 # Arguments:
 #   $1 - component id to test.
@@ -189,7 +192,8 @@ _isc_is_installed() {
   local id="$1" detect dir
   detect="$(_isc_field "$id" 4)"
   if [[ -n "$detect" ]] && declare -F "$detect" >/dev/null 2>&1; then
-    if "$detect"; then return 0; fi
+    "$detect"
+    return $?
   fi
   dir="$(_isc_receipt_dir)"
   [[ -f "$dir/$id" ]]
@@ -304,7 +308,8 @@ _isc_default_ids() {
 # Sub-commands
 ###############################################################################
 
-# Print "id<TAB>label<TAB>default[<TAB>section]" for every component. Consumed
+# Print "id<TAB>label<TAB>default[<TAB>section[<TAB>requires]]" for every
+# component. Consumed
 # by the master installer to build the aggregate menu without sourcing internals.
 #
 # Arguments:
@@ -313,15 +318,41 @@ _isc_default_ids() {
 # Returns:
 #   0; prints one tab-separated line per component.
 _isc_list_components() {
-  local entry id label def fn detect uninstall section
+  local entry id label def fn detect uninstall section requires
   for entry in "${ISC_COMPONENTS[@]}"; do
-    IFS='|' read -r id label def fn detect uninstall section <<<"$entry"
-    if [[ -n "$section" ]]; then
+    IFS='|' read -r id label def fn detect uninstall section requires <<<"$entry"
+    if [[ -n "$requires" ]]; then
+      printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$label" "$def" "$section" "$requires"
+    elif [[ -n "$section" ]]; then
       printf '%s\t%s\t%s\t%s\n' "$id" "$label" "$def" "$section"
     else
       printf '%s\t%s\t%s\n' "$id" "$label" "$def"
     fi
   done
+}
+
+# Decide whether every requirement for component id $1 is either selected in
+# the current operation or already installed. This mirrors the interactive
+# menu guard for explicit --select/--default/--all invocations.
+#
+# Arguments:
+#   $1 - dependent component id.
+#   $2 - normalized successfully-completed id string padded with spaces.
+#
+# Returns:
+#   0 when all requirements are satisfied; 1 otherwise.
+_isc_requirements_satisfied() {
+  local id="$1" completed="$2" raw requirement
+  raw="$(_isc_field "$id" 7)"
+  [[ -z "$raw" ]] && return 0
+  for requirement in ${raw//,/ }; do
+    [[ -n "$requirement" ]] || continue
+    if [[ "$completed" == *" $requirement "* ]] || _isc_is_installed "$requirement"; then
+      continue
+    fi
+    return 1
+  done
+  return 0
 }
 
 # Run the install functions for the given space/newline-separated ids, in
@@ -334,12 +365,24 @@ _isc_list_components() {
 #   0 when all selected components succeeded; 1 when one or more failed.
 _isc_run_selected() {
   local selected=" $(tr ',\n' '  ' <<<"$1") "
-  local entry id label def fn detect uninstall ran=0
+  local completed=" "
+  local entry id label def fn detect uninstall section requires requirement ran=0
   local -a failed=()
   isc_log_info "run_selected requested ids:${selected}"
   for entry in "${ISC_COMPONENTS[@]}"; do
-    IFS='|' read -r id label def fn detect uninstall <<<"$entry"
+    IFS='|' read -r id label def fn detect uninstall section requires <<<"$entry"
     [[ "$selected" == *" $id "* ]] || continue
+    if ! _isc_requirements_satisfied "$id" "$completed"; then
+      for requirement in ${requires//,/ }; do
+        if [[ "$completed" != *" $requirement "* ]] && ! _isc_is_installed "$requirement"; then
+          break
+        fi
+      done
+      isc_log_error "component '$id' requires unavailable component '$requirement'"
+      msg "WARN: component '$id' requires component '$requirement' to be selected or installed — skipping"
+      failed+=("$id")
+      continue
+    fi
     # Run the optional one-time preflight (e.g. ensuring the session bus) just
     # before the first real component, so an empty/unmatched selection is a
     # genuine no-op.
@@ -372,6 +415,7 @@ _isc_run_selected() {
     else
       isc_log_info "component '$id' completed"
       _isc_mark_installed "$id"
+      completed+="$id "
     fi
   done
   # Optional postflight (e.g. audits, sudo-required summaries) after components.
@@ -410,7 +454,7 @@ Usage:
   bash install.sh --reconfigure a,b,c  Re-apply config of these (idempotent re-run)
   bash install.sh --uninstall a,b,c    Uninstall exactly these component ids
   bash install.sh --auth          Allow authenticated Git clone/pull in components
-  bash install.sh --list-components  List: id<TAB>label<TAB>default[<TAB>section]
+  bash install.sh --list-components  List: id<TAB>label<TAB>default[<TAB>section[<TAB>requires]]
   bash install.sh --detect        Show install state as: id<TAB>installed|absent
   bash install.sh --help          Show this help
 
@@ -476,6 +520,7 @@ _isc_interactive_select() {
     ids+="$id "
     CM_COMP_LABEL[$repo|$id]="$(_isc_field "$id" 1)"
     CM_COMP_SECTION[$repo|$id]="$(_isc_field "$id" 6)"
+    CM_COMP_REQUIRES[$repo|$id]="$(_isc_field "$id" 7)"
     CM_COMP_UNINSTALL[$repo|$id]=0
     # Reflect live install state so the menu can show installed/reconfigure
     # markers and offer uninstall. Already-installed components default to
@@ -491,6 +536,7 @@ _isc_interactive_select() {
     fi
   done < <(_isc_all_ids)
   CM_COMP_IDS[$repo]="${ids% }"
+  declare -F cm_reconcile_dependencies >/dev/null 2>&1 && cm_reconcile_dependencies "$repo"
 
   if cm_single_submenu "$repo"; then
     isc_log_info "interactive selection accepted for repo '$repo'"

@@ -132,6 +132,17 @@ def test_detect_prefers_detect_function(tmp_path):
     assert detect_map(rd)["gamma"] == "installed"
 
 
+def test_negative_live_detect_is_not_masked_by_stale_receipt(tmp_path):
+    """A custom detector is authoritative even after an earlier install receipt."""
+    rd = tmp_path / "receipts"
+    (tmp_path / "gamma_present").write_text("x")
+    run(rd, ["--select", "gamma"])
+    assert (rd / "demo" / "gamma").is_file()
+    (tmp_path / "gamma_present").unlink()
+
+    assert detect_map(rd)["gamma"] == "absent"
+
+
 def test_uninstall_runs_function_and_clears_receipt(tmp_path):
     """--uninstall runs the uninstall function and removes the receipt."""
     rd = tmp_path / "receipts"

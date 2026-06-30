@@ -48,7 +48,7 @@ bash install.sh                  # interactive submenu on a TTY, else defaults
 bash install.sh --default        # core + all default-on modules, no prompts
 bash install.sh --all            # core + every module, no prompts
 bash install.sh --select menu    # core + exactly these module ids
-bash install.sh --list-components  # print: id<TAB>label<TAB>default[<TAB>section]
+bash install.sh --list-components  # print: id<TAB>label<TAB>default[<TAB>section[<TAB>requires]]
 ```
 
 **Core (always installed, never deselectable).** Installed unconditionally so
@@ -108,8 +108,8 @@ component_main "$@"
 
 The manifest maps component ids to the installer's own step functions. Each
 entry is
-`id|label|default|install_fn[|detect_fn[|uninstall_fn[|section]]]`; the final
-three fields are optional:
+`id|label|default|install_fn[|detect_fn[|uninstall_fn[|section[|requires]]]]`;
+the final four fields are optional:
 
 ```bash
 ISC_REPO_NAME="example_repo"
@@ -119,6 +119,7 @@ ISC_POSTFLIGHT="report_sudo_required"  # optional, runs once after components
 ISC_COMPONENTS=(
   "feature_a|Human label for A|on|install_feature_a|detect_feature_a|uninstall_feature_a"
   "feature_b|Human label for B|off|install_feature_b|||Models"
+  "feature_b_status|B status bar|on|install_b_status|||Models|feature_b"
 )
 ```
 
@@ -133,6 +134,9 @@ ISC_COMPONENTS=(
 * `section` is a visual heading only. Components remain selectable rows and
   execute in manifest order; repositories can put a `Models` section first
   without introducing pseudo-components.
+* `requires` is a comma-separated list of component ids. A dependent row can be
+  selected only when every requirement is selected in the same run or detected
+  as already installed. Requirements must precede dependents in manifest order.
 
 The runtime writes a receipt after each successful install and clears it after a
 successful uninstall, so install state stays accurate across runs.
@@ -146,7 +150,7 @@ bash install.sh --all            # install every component, no prompts
 bash install.sh --select a,b     # install exactly these component ids
 bash install.sh --reconfigure a  # re-apply (idempotent re-run) of these ids
 bash install.sh --uninstall a,b  # uninstall exactly these component ids
-bash install.sh --list-components  # print: id<TAB>label<TAB>default[<TAB>section]
+bash install.sh --list-components  # print: id<TAB>label<TAB>default[<TAB>section[<TAB>requires]]
 bash install.sh --detect         # print: id<TAB>installed|absent
 ```
 

@@ -16,6 +16,9 @@
 #   CM_COMP_IDS[repo]     - space-separated component ids belonging to a repo
 #   CM_COMP_LABEL[repo|id]- human label for a component
 #   CM_COMP_SECTION[repo|id] - optional visual section heading
+#   CM_COMP_REQUIRES[repo|id] - optional comma/space-separated ids that must be
+#                           selected or already installed before this row can
+#                           be selected
 #   CM_COMP_ON[repo|id]   - 1 when that component is selected, 0 otherwise
 #   CM_COMP_INSTALLED[repo|id] - 1 when already installed on this machine
 #                           (optional; defaults to 0 — drives the install-state
@@ -83,7 +86,7 @@ fi
 
 # Associative state shared with callers. Declared here so sourcing alone makes
 # them available; callers may also declare them, which is harmless.
-declare -gA CM_REPO_LABEL CM_REPO_ENABLED CM_COMP_IDS CM_COMP_LABEL CM_COMP_SECTION CM_COMP_ON 2>/dev/null || true
+declare -gA CM_REPO_LABEL CM_REPO_ENABLED CM_COMP_IDS CM_COMP_LABEL CM_COMP_SECTION CM_COMP_REQUIRES CM_COMP_ON 2>/dev/null || true
 declare -gA CM_COMP_INSTALLED CM_COMP_UNINSTALL 2>/dev/null || true
 declare -gA CM_COMP_FAVORITE_ELIGIBLE CM_COMP_FAVORITE_ON 2>/dev/null || true
 declare -gA CM_COMP_STARTUP_ELIGIBLE CM_COMP_STARTUP_ON 2>/dev/null || true
@@ -203,6 +206,50 @@ cm_comp_ids_for_repo() {
   done
 }
 
+# Return whether a component's required rows are selected or already installed.
+# A requirement marked for uninstall is treated as unavailable immediately.
+cm_component_available() {
+  local repo="$1" id="$2" raw requirement
+  raw="${CM_COMP_REQUIRES[$repo|$id]:-}"
+  [[ -z "$raw" ]] && return 0
+  for requirement in ${raw//,/ }; do
+    [[ -n "$requirement" ]] || continue
+    [[ "${CM_COMP_UNINSTALL[$repo|$requirement]:-0}" == "1" ]] && return 1
+    if [[ "${CM_COMP_ON[$repo|$requirement]:-0}" != "1" \
+       && "${CM_COMP_INSTALLED[$repo|$requirement]:-0}" != "1" ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+# Clear pending apply state for dependents whose requirements became
+# unavailable. Installed components remain removable with [u].
+cm_reconcile_dependencies() {
+  local repo="$1" id changed=1
+  while (( changed )); do
+    changed=0
+    for id in ${CM_COMP_IDS[$repo]:-}; do
+      [[ -n "$id" ]] || continue
+      if [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]] && ! cm_component_available "$repo" "$id"; then
+        CM_COMP_ON[$repo|$id]=0
+        changed=1
+      fi
+    done
+  done
+}
+
+# Render the human labels of a component's requirements for its disabled tag.
+cm_component_requirement_labels() {
+  local repo="$1" id="$2" raw requirement out=""
+  raw="${CM_COMP_REQUIRES[$repo|$id]:-}"
+  for requirement in ${raw//,/ }; do
+    [[ -n "$requirement" ]] || continue
+    out="${out:+$out, }${CM_COMP_LABEL[$repo|$requirement]:-$requirement}"
+  done
+  printf '%s' "$out"
+}
+
 # Echo the action/state currently represented by a component's menu flags.
 #
 # Arguments:
@@ -277,7 +324,7 @@ cm_render_submenu() {
   local repo="$1" sel="$2" title="$3" footer="$4"
   local -a ids=()
   local i id mark box label on total inst tag term_rows chrome_rows footer_rows
-  local favorite startup action_label
+  local favorite startup action_label requirement_labels
   local visible_rows offset end indicators section section_count=0 previous_section=""
   cm_comp_ids_for_repo "$repo" ids
   if (( ${#ids[@]} > 0 )); then
@@ -356,6 +403,9 @@ cm_render_submenu() {
     startup="${CM_COMP_STARTUP_ON[$repo|$id]:-0}"
     if [[ "${CM_COMP_UNINSTALL[$repo|$id]:-0}" == "1" ]]; then
       box='[\033[31m✗\033[0m]'; tag=' \033[31m(uninstall)\033[0m'
+    elif ! cm_component_available "$repo" "$id"; then
+      requirement_labels="$(cm_component_requirement_labels "$repo" "$id")"
+      box='[\033[2m-\033[0m]'; tag=" \\033[2m(requires: $requirement_labels)\\033[0m"
     elif [[ "$favorite" == "1" || "$startup" == "1" ]]; then
       if [[ "$favorite" == "1" && "$startup" == "1" ]]; then
         box='[\033[36mFS\033[0m]'
@@ -419,6 +469,7 @@ cm_submenu_loop() {
     return 0
   fi
   while true; do
+    cm_reconcile_dependencies "$repo"
     (( sel < 0 )) && sel=0
     (( ${#ids[@]} > 0 && sel >= ${#ids[@]} )) && sel=$(( ${#ids[@]} - 1 ))
     cm_render_submenu "$repo" "$sel" "$title" "$footer"
@@ -429,6 +480,7 @@ cm_submenu_loop() {
       SPACE)
         id="${ids[$sel]:-}"
         [[ -z "$id" ]] && continue
+        cm_component_available "$repo" "$id" || continue
         # SPACE selects a component to apply (install if absent, reconfigure if
         # installed) and always clears any pending uninstall mark.
         CM_COMP_UNINSTALL[$repo|$id]=0
@@ -437,6 +489,7 @@ cm_submenu_loop() {
         else
           CM_COMP_ON[$repo|$id]=1
         fi
+        cm_reconcile_dependencies "$repo"
         ;;
       UNINSTALL)
         id="${ids[$sel]:-}"
@@ -456,6 +509,7 @@ cm_submenu_loop() {
       FAVORITE)
         id="${ids[$sel]:-}"
         [[ -z "$id" ]] && continue
+        cm_component_available "$repo" "$id" || continue
         [[ "${CM_COMP_FAVORITE_ELIGIBLE[$repo|$id]:-0}" == "1" ]] || continue
         CM_COMP_UNINSTALL[$repo|$id]=0
         if [[ "${CM_COMP_FAVORITE_ON[$repo|$id]:-0}" == "1" ]]; then
@@ -467,6 +521,7 @@ cm_submenu_loop() {
       STARTUP)
         id="${ids[$sel]:-}"
         [[ -z "$id" ]] && continue
+        cm_component_available "$repo" "$id" || continue
         [[ "${CM_COMP_STARTUP_ELIGIBLE[$repo|$id]:-0}" == "1" ]] || continue
         CM_COMP_UNINSTALL[$repo|$id]=0
         if [[ "${CM_COMP_STARTUP_ON[$repo|$id]:-0}" == "1" ]]; then
@@ -478,13 +533,21 @@ cm_submenu_loop() {
       RECONFIG)
         # Mark every installed component for reconfigure (idempotent re-apply).
         for id in "${ids[@]}"; do
-          if [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]]; then
+          if [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]] && cm_component_available "$repo" "$id"; then
             CM_COMP_ON[$repo|$id]=1
             CM_COMP_UNINSTALL[$repo|$id]=0
           fi
         done
         ;;
-      ALL)  for id in "${ids[@]}"; do CM_COMP_ON[$repo|$id]=1; CM_COMP_UNINSTALL[$repo|$id]=0; done ;;
+      ALL)
+        for id in "${ids[@]}"; do
+          if cm_component_available "$repo" "$id"; then
+            CM_COMP_ON[$repo|$id]=1
+            CM_COMP_UNINSTALL[$repo|$id]=0
+          fi
+        done
+        cm_reconcile_dependencies "$repo"
+        ;;
       NONE) for id in "${ids[@]}"; do CM_COMP_ON[$repo|$id]=0; done ;;
       LEFT)
         [[ "$mode" == "embedded" ]] && return 0

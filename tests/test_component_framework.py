@@ -8,6 +8,7 @@ Bash subprocesses with a synthetic manifest. No installers run and no system
 state changes.
 """
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -87,6 +88,99 @@ def test_list_components_includes_optional_section_metadata():
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines()[0] == "alpha\tAlpha\ton\tModels"
+
+
+def test_list_components_includes_optional_requirement_metadata():
+    """An eighth manifest field should expose required component ids."""
+    dependency_harness = HARNESS.replace(
+        '"beta|Beta|on|comp_b"', '"beta|Beta|on|comp_b|||Agent tools|alpha"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", dependency_harness, "bash", "--list-components"],
+        cwd=REPO,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[1] == "beta\tBeta\ton\tAgent tools\talpha"
+
+
+def test_list_components_preserves_empty_section_before_requirement():
+    """Requirement metadata must retain an empty fourth section column."""
+    dependency_harness = HARNESS.replace(
+        '"beta|Beta|on|comp_b"', '"beta|Beta|on|comp_b||||alpha"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", dependency_harness, "bash", "--list-components"],
+        cwd=REPO,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[1] == "beta\tBeta\ton\t\talpha"
+
+
+def test_select_rejects_dependency_without_selected_or_installed_requirement():
+    """Direct --select calls must enforce the same dependency as the menu."""
+    dependency_harness = HARNESS.replace(
+        '"beta|Beta|on|comp_b"', '"beta|Beta|on|comp_b|||Agent tools|alpha"'
+    )
+    with tempfile.TemporaryDirectory() as receipt_dir:
+        result = subprocess.run(
+            ["bash", "-c", dependency_harness, "bash", "--select", "beta"],
+            cwd=REPO,
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "ISC_RECEIPT_DIR": receipt_dir},
+        )
+
+    assert result.returncode != 0
+    assert "requires component 'alpha'" in result.stdout
+    assert "ran:b" not in result.stdout
+
+
+def test_select_accepts_dependency_selected_in_same_run():
+    """A dependent may run when its requirement is selected in the same run."""
+    dependency_harness = HARNESS.replace(
+        '"beta|Beta|on|comp_b"', '"beta|Beta|on|comp_b|||Agent tools|alpha"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", dependency_harness, "bash", "--select", "alpha,beta"],
+        cwd=REPO,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "ran:a" in result.stdout and "ran:b" in result.stdout
+
+
+def test_failed_requirement_prevents_dependent_execution():
+    """Selecting a prerequisite is insufficient when its install function fails."""
+    dependency_harness = HARNESS.replace(
+        'comp_a() { echo "ran:a"; }', 'comp_a() { echo "failed:a"; return 1; }'
+    ).replace(
+        '"beta|Beta|on|comp_b"', '"beta|Beta|on|comp_b|||Agent tools|alpha"'
+    )
+    with tempfile.TemporaryDirectory() as receipt_dir:
+        result = subprocess.run(
+            ["bash", "-c", dependency_harness, "bash", "--select", "alpha,beta"],
+            cwd=REPO,
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "ISC_RECEIPT_DIR": receipt_dir},
+        )
+
+    assert result.returncode != 0
+    assert "failed:a" in result.stdout
+    assert "ran:b" not in result.stdout
 
 
 def test_default_runs_only_default_on():
