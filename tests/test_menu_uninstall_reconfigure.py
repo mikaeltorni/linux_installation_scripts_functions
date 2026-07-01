@@ -25,6 +25,7 @@ KEYS = {
     "R": "r",
     "F": "f",
     "S": "s",
+    **{str(number): str(number) for number in range(10)},
     "ENTER": "\n",
     "Q": "q",
 }
@@ -61,12 +62,17 @@ CM_COMP_STARTUP_ELIGIBLE[$repo|alpha]=1
 CM_COMP_STARTUP_ELIGIBLE[$repo|beta]=1
 CM_COMP_STARTUP_ON[$repo|alpha]=0
 CM_COMP_STARTUP_ON[$repo|beta]=1
+CM_COMP_WORKSPACE_ELIGIBLE[$repo|alpha]=1
+CM_COMP_WORKSPACE_ELIGIBLE[$repo|beta]=1
+CM_COMP_WORKSPACE[$repo|alpha]=0
+CM_COMP_WORKSPACE[$repo|beta]=4
 cm_single_submenu "$repo" >/dev/null 2>&1
 for id in alpha beta; do
   printf '%s.on=%s\\n' "$id" "${{CM_COMP_ON[$repo|$id]:-}}"
   printf '%s.uninstall=%s\\n' "$id" "${{CM_COMP_UNINSTALL[$repo|$id]:-}}"
   printf '%s.favorite=%s\\n' "$id" "${{CM_COMP_FAVORITE_ON[$repo|$id]:-}}"
   printf '%s.startup=%s\\n' "$id" "${{CM_COMP_STARTUP_ON[$repo|$id]:-}}"
+  printf '%s.workspace=%s\\n' "$id" "${{CM_COMP_WORKSPACE[$repo|$id]:-}}"
 done
 """
     result = subprocess.run(
@@ -141,6 +147,17 @@ def test_s_toggles_existing_startup_off():
     state = drive(["DOWN", "S", "ENTER"])
     assert state["beta.startup"] == "0"
     assert state["beta.on"] == "1"
+
+
+def test_number_assigns_workspace_without_changing_install_state():
+    state = drive(["3", "ENTER"])
+    assert state["alpha.workspace"] == "3"
+    assert state["alpha.on"] == "0"
+
+
+def test_zero_clears_workspace_assignment():
+    state = drive(["DOWN", "0", "ENTER"])
+    assert state["beta.workspace"] == "0"
 
 
 def test_submenu_renders_combined_favorite_and_startup_marker():

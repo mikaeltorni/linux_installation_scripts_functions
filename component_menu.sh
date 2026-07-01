@@ -90,6 +90,7 @@ declare -gA CM_REPO_LABEL CM_REPO_ENABLED CM_COMP_IDS CM_COMP_LABEL CM_COMP_SECT
 declare -gA CM_COMP_INSTALLED CM_COMP_UNINSTALL 2>/dev/null || true
 declare -gA CM_COMP_FAVORITE_ELIGIBLE CM_COMP_FAVORITE_ON 2>/dev/null || true
 declare -gA CM_COMP_STARTUP_ELIGIBLE CM_COMP_STARTUP_ON 2>/dev/null || true
+declare -gA CM_COMP_WORKSPACE_ELIGIBLE CM_COMP_WORKSPACE 2>/dev/null || true
 declare -ga CM_REPOS 2>/dev/null || true
 
 ###############################################################################
@@ -133,6 +134,7 @@ cm_read_key() {
     n|N) echo NONE ;;
     f|F) echo FAVORITE ;;
     s|S) echo STARTUP ;;
+    [0-9]) echo "WORKSPACE$key" ;;
     u|U) echo UNINSTALL ;;
     r|R) echo RECONFIG ;;
     l|L) echo LOG ;;
@@ -303,7 +305,7 @@ cm_log_component_state_snapshot() {
       label="${CM_COMP_LABEL[$repo|$id]:-$id}"
       favorite="${CM_COMP_FAVORITE_ON[$repo|$id]:-0}"
       startup="${CM_COMP_STARTUP_ON[$repo|$id]:-0}"
-      isc_log_info "component_state repo=$repo component=$id label=$label state=$state favorite=$favorite startup=$startup selected=${CM_COMP_ON[$repo|$id]:-0} installed=${CM_COMP_INSTALLED[$repo|$id]:-0} uninstall=${CM_COMP_UNINSTALL[$repo|$id]:-0}"
+      isc_log_info "component_state repo=$repo component=$id label=$label state=$state favorite=$favorite startup=$startup workspace=${CM_COMP_WORKSPACE[$repo|$id]:-0} selected=${CM_COMP_ON[$repo|$id]:-0} installed=${CM_COMP_INSTALLED[$repo|$id]:-0} uninstall=${CM_COMP_UNINSTALL[$repo|$id]:-0}"
     done
   done
   isc_log_info "component state snapshot end"
@@ -324,7 +326,7 @@ cm_render_submenu() {
   local repo="$1" sel="$2" title="$3" footer="$4"
   local -a ids=()
   local i id mark box label on total inst tag term_rows chrome_rows footer_rows
-  local favorite startup action_label requirement_labels
+  local favorite startup workspace action_label requirement_labels
   local visible_rows offset end indicators section section_count=0 previous_section=""
   cm_comp_ids_for_repo "$repo" ids
   if (( ${#ids[@]} > 0 )); then
@@ -401,22 +403,22 @@ cm_render_submenu() {
     tag=''
     favorite="${CM_COMP_FAVORITE_ON[$repo|$id]:-0}"
     startup="${CM_COMP_STARTUP_ON[$repo|$id]:-0}"
+    workspace="${CM_COMP_WORKSPACE[$repo|$id]:-0}"
     if [[ "${CM_COMP_UNINSTALL[$repo|$id]:-0}" == "1" ]]; then
       box='[\033[31m✗\033[0m]'; tag=' \033[31m(uninstall)\033[0m'
     elif ! cm_component_available "$repo" "$id"; then
       requirement_labels="$(cm_component_requirement_labels "$repo" "$id")"
       box='[\033[2m-\033[0m]'; tag=" \\033[2m(requires: $requirement_labels)\\033[0m"
-    elif [[ "$favorite" == "1" || "$startup" == "1" ]]; then
-      if [[ "$favorite" == "1" && "$startup" == "1" ]]; then
-        box='[\033[36mFS\033[0m]'
-        action_label='favourite, startup'
-      elif [[ "$favorite" == "1" ]]; then
-        box='[\033[36mF\033[0m]'
-        action_label='favourite'
-      else
-        box='[\033[35mS\033[0m]'
-        action_label='startup'
-      fi
+    elif [[ "$favorite" == "1" || "$startup" == "1" || "$workspace" =~ ^[1-9]$ ]]; then
+      action_label=''
+      [[ "$favorite" == "1" ]] && action_label='favourite'
+      [[ "$startup" == "1" ]] && action_label="${action_label:+$action_label, }startup"
+      [[ "$workspace" =~ ^[1-9]$ ]] && action_label="${action_label:+$action_label, }workspace $workspace"
+      box='[\033[36m'
+      [[ "$favorite" == "1" ]] && box+='F'
+      [[ "$startup" == "1" ]] && box+='S'
+      [[ "$workspace" =~ ^[1-9]$ ]] && box+="W$workspace"
+      box+='\033[0m]'
       if [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]]; then
         tag=" \\033[2m(installed, $action_label)\\033[0m"
       else
@@ -455,9 +457,9 @@ cm_submenu_loop() {
   cm_comp_ids_for_repo "$repo" ids
   title="Configure components"
   if [[ "$mode" == "standalone" ]]; then
-    footer="[↑/↓] move  [space] toggle  [f] favourite  [s] startup  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [enter] apply  [q] cancel"
+    footer="[↑/↓] move  [space] toggle  [f] favourite  [s] startup  [1-9] workspace  [0] clear  [u] uninstall  [r] reconfigure  [enter] apply"
   else
-    footer="[↑/↓] move  [space] toggle  [f] favourite  [s] startup  [u] uninstall  [r] reconfigure all  [a] all  [n] none  [←/enter] back"
+    footer="[↑/↓] move  [space] toggle  [f] favourite  [s] startup  [1-9] workspace  [0] clear  [u] uninstall  [r] reconfigure  [←/enter] back"
     cm_show_cursor
   fi
   if (( ${#ids[@]} == 0 )); then
@@ -504,6 +506,7 @@ cm_submenu_loop() {
           CM_COMP_ON[$repo|$id]=0
           CM_COMP_FAVORITE_ON[$repo|$id]=0
           CM_COMP_STARTUP_ON[$repo|$id]=0
+          CM_COMP_WORKSPACE[$repo|$id]=0
         fi
         ;;
       FAVORITE)
@@ -529,6 +532,14 @@ cm_submenu_loop() {
         else
           CM_COMP_STARTUP_ON[$repo|$id]=1
         fi
+        ;;
+      WORKSPACE[0-9])
+        id="${ids[$sel]:-}"
+        [[ -z "$id" ]] && continue
+        cm_component_available "$repo" "$id" || continue
+        [[ "${CM_COMP_WORKSPACE_ELIGIBLE[$repo|$id]:-0}" == "1" ]] || continue
+        CM_COMP_UNINSTALL[$repo|$id]=0
+        CM_COMP_WORKSPACE[$repo|$id]="${key#WORKSPACE}"
         ;;
       RECONFIG)
         # Mark every installed component for reconfigure (idempotent re-apply).
