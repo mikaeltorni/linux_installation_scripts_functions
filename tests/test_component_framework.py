@@ -26,6 +26,8 @@ source "{REPO}/component_runtime.sh"
 comp_a() {{ echo "ran:a"; }}
 comp_b() {{ echo "ran:b"; }}
 comp_c() {{ echo "ran:c"; }}
+configure_alpha() {{ echo "configured:alpha"; }}
+status_alpha() {{ echo "Super+W"; }}
 pre() {{ echo "preflight"; }}
 post() {{ echo "postflight"; }}
 ISC_REPO_NAME="demo"
@@ -63,6 +65,29 @@ def test_framework_files_exist():
         "installer_helpers.sh",
     ):
         assert (REPO / name).is_file(), f"missing {name}"
+
+
+def test_download_fallback_includes_repeatable_fields():
+    """A lone consumer checkout must receive the Python nested-row helper."""
+    with tempfile.TemporaryDirectory() as directory:
+        tmp_path = Path(directory)
+        raw = tmp_path / "raw"
+        raw.mkdir()
+        for name in (
+            "component_logging.sh", "installer_helpers.sh", "repeatable_fields.py",
+            "component_menu.sh", "component_runtime.sh",
+        ):
+            raw.joinpath(name).write_bytes(REPO.joinpath(name).read_bytes())
+        home = tmp_path / "home"
+        result = subprocess.run(
+            ["bash", "-c", f'source "{REPO / "component_loader.sh"}"; isc_load_helpers; printf "%s" "$ISC_REPEATABLE_FIELDS_PY"'],
+            env={**os.environ, "HOME": str(home), "XDG_CACHE_HOME": str(tmp_path / "cache"),
+                 "ISC_FUNCTIONS_RAW": f"file://{raw}", "SCRIPT_DIR": str(tmp_path / "consumer")},
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert Path(result.stdout).is_file()
+        assert Path(result.stdout).name == "repeatable_fields.py"
 
 
 def test_list_components_format():
@@ -122,6 +147,43 @@ def test_list_components_preserves_empty_section_before_requirement():
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines()[1] == "beta\tBeta\ton\t\talpha"
+
+
+def test_manifest_configurator_is_discoverable_and_invokable():
+    """A ninth manifest field should expose a repository-owned nested screen."""
+    configurable = HARNESS.replace(
+        '"alpha|Alpha|on|comp_a"',
+        '"alpha|Alpha|on|comp_a|||||configure_alpha"',
+    )
+    listed = subprocess.run(
+        ["bash", "-c", configurable, "bash", "--list-configurable-components"],
+        cwd=REPO, check=False, capture_output=True, text=True,
+    )
+    invoked = subprocess.run(
+        ["bash", "-c", configurable, "bash", "--configure-component", "alpha"],
+        cwd=REPO, check=False, capture_output=True, text=True,
+    )
+    assert listed.returncode == 0 and listed.stdout.splitlines() == ["alpha"]
+    assert invoked.returncode == 0 and "configured:alpha" in invoked.stdout
+    components = subprocess.run(
+        ["bash", "-c", configurable, "bash", "--list-components"],
+        cwd=REPO, check=False, capture_output=True, text=True,
+    )
+    assert components.stdout.splitlines()[0] == "alpha\tAlpha\ton"
+
+
+def test_manifest_config_status_is_discoverable():
+    """A tenth manifest field should expose the current editable value."""
+    configurable = HARNESS.replace(
+        '"alpha|Alpha|on|comp_a"',
+        '"alpha|Alpha|on|comp_a|||||configure_alpha|status_alpha"',
+    )
+    listed = subprocess.run(
+        ["bash", "-c", configurable, "bash", "--list-component-config-values"],
+        cwd=REPO, check=False, capture_output=True, text=True,
+    )
+    assert listed.returncode == 0
+    assert listed.stdout.splitlines() == ["alpha\tSuper+W"]
 
 
 def test_select_rejects_dependency_without_selected_or_installed_requirement():
@@ -602,6 +664,29 @@ def test_python_log_call_records_arguments_and_return_value():
     text = (REPO / ".log" / "python_trace_tests.log").read_text()
     assert "ENTER test_component_framework.py:test_python_log_call_records_arguments_and_return_value.<locals>.combine(prefix='alpha', count=3)" in text
     assert "EXIT test_component_framework.py:test_python_log_call_records_arguments_and_return_value.<locals>.combine -> 'alpha:3'" in text
+
+
+def test_interactive_submenu_is_not_redirected_to_devnull():
+    """The standalone interactive submenu must render to the terminal.
+
+    Regression: `_isc_interactive_select >/dev/null` sent the whole menu to
+    /dev/null (it only sets result globals, echoing nothing), leaving the user
+    staring at a blank screen while the menu silently waited for keypresses.
+    """
+    runtime = (REPO / "component_runtime.sh").read_text(encoding="utf-8")
+    assert "_isc_interactive_select >/dev/null" not in runtime
+    assert "_isc_interactive_select; rc=$?" in runtime
+
+
+def test_hotkey_capture_is_opt_in():
+    """Interactive hotkey capture must be gated behind ISC_HOTKEY_INTERACTIVE.
+
+    A plain install (including `sudo bash install.sh` and the master run) must
+    apply the shown defaults non-interactively and never open an evdev grab, so
+    it can never appear to hang.
+    """
+    capture = (REPO / "hotkey_capture.sh").read_text(encoding="utf-8")
+    assert 'ISC_HOTKEY_INTERACTIVE:-0' in capture
 
 
 if __name__ == "__main__":

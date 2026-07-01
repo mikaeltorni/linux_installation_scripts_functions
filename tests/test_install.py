@@ -69,7 +69,7 @@ def test_list_components_lists_optional_modules_default_on():
         assert lines == [
             "menu\tInteractive selection menu engine (component_menu.sh)\ton",
             "runtime\tPer-repository installer runtime contract (component_runtime.sh)\ton",
-            "installer_helpers\tShared install-time helpers (installer_helpers.sh)\ton",
+            "installer_helpers\tShared install-time helpers + hotkey-capture engine\ton",
         ], out
         # Listing must be side-effect free: nothing deployed.
         assert not install_dir.exists(), "listing must not create the install dir"
@@ -95,6 +95,10 @@ def test_default_installs_core_plus_all_optional_modules():
         rc, out, err = run_install(["--default"], install_dir)
         assert rc == 0, err
         for name in (*CORE_FILES, *OPTIONAL_FILES.values()):
+            assert (install_dir / name).is_file(), f"missing after --default: {name}\n{out}"
+        # The installer_helpers module also ships the shared hotkey-capture engine
+        # so configurable hotkeys work on the download-cache path (no checkout).
+        for name in ("hotkey_capture.sh", "hotkey_capture.py", "repeatable_fields.py"):
             assert (install_dir / name).is_file(), f"missing after --default: {name}\n{out}"
 
 

@@ -9,8 +9,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo "Syntax-checking shell sources..."
-bash -n "$ROOT_DIR"/component_logging.sh "$ROOT_DIR"/component_menu.sh "$ROOT_DIR"/component_runtime.sh "$ROOT_DIR"/component_loader.sh "$ROOT_DIR"/installer_helpers.sh
+bash -n "$ROOT_DIR"/component_logging.sh "$ROOT_DIR"/component_menu.sh "$ROOT_DIR"/component_runtime.sh "$ROOT_DIR"/component_loader.sh "$ROOT_DIR"/installer_helpers.sh "$ROOT_DIR"/hotkey_capture.sh
 bash -n "$ROOT_DIR"/install.sh "$ROOT_DIR"/lib/framework_install.sh "$ROOT_DIR"/installer/components.sh
+python3 -m py_compile "$ROOT_DIR"/hotkey_capture.py "$ROOT_DIR"/repeatable_fields.py
 echo "  OK"
 
 fail=0

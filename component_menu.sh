@@ -32,6 +32,11 @@
 #   CM_COMP_STARTUP_ELIGIBLE[repo|id] - 1 when a component can be launched
 #                           automatically at desktop login
 #   CM_COMP_STARTUP_ON[repo|id] - 1 when startup is selected for the component
+#   CM_COMP_CONFIGURE_ELIGIBLE[repo|id] - 1 when RIGHT opens a repository-owned
+#                           nested detail/configuration screen
+#   CM_COMP_CONFIG_VALUE[repo|id] - current friendly value shown in brackets
+#                           beside an editable component (for example Super+W)
+#   CM_CONFIGURE_CALLBACK - function name called as callback REPO COMPONENT
 #   ISC_MENU_DEBUG       - 1 enables debug-only menu helpers such as [l] state
 #                           logging in the aggregate menu
 #
@@ -91,6 +96,8 @@ declare -gA CM_COMP_INSTALLED CM_COMP_UNINSTALL 2>/dev/null || true
 declare -gA CM_COMP_FAVORITE_ELIGIBLE CM_COMP_FAVORITE_ON 2>/dev/null || true
 declare -gA CM_COMP_STARTUP_ELIGIBLE CM_COMP_STARTUP_ON 2>/dev/null || true
 declare -gA CM_COMP_WORKSPACE_ELIGIBLE CM_COMP_WORKSPACE 2>/dev/null || true
+declare -gA CM_COMP_CONFIGURE_ELIGIBLE 2>/dev/null || true
+declare -gA CM_COMP_CONFIG_VALUE 2>/dev/null || true
 declare -ga CM_REPOS 2>/dev/null || true
 
 ###############################################################################
@@ -326,7 +333,7 @@ cm_render_submenu() {
   local repo="$1" sel="$2" title="$3" footer="$4"
   local -a ids=()
   local i id mark box label on total inst tag term_rows chrome_rows footer_rows
-  local favorite startup workspace action_label requirement_labels
+  local favorite startup workspace action_label requirement_labels config_value
   local visible_rows offset end indicators section section_count=0 previous_section=""
   cm_comp_ids_for_repo "$repo" ids
   if (( ${#ids[@]} > 0 )); then
@@ -400,6 +407,10 @@ cm_render_submenu() {
     fi
     if [[ "$i" == "$sel" ]]; then mark='\033[36m›\033[0m'; else mark=' '; fi
     label="${CM_COMP_LABEL[$repo|$id]:-$id}"
+    config_value="${CM_COMP_CONFIG_VALUE[$repo|$id]:-}"
+    if [[ "${CM_COMP_CONFIGURE_ELIGIBLE[$repo|$id]:-0}" == "1" && -n "$config_value" ]]; then
+      label+=" [$config_value]"
+    fi
     tag=''
     favorite="${CM_COMP_FAVORITE_ON[$repo|$id]:-0}"
     startup="${CM_COMP_STARTUP_ON[$repo|$id]:-0}"
@@ -433,6 +444,13 @@ cm_render_submenu() {
     else
       if [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then box='[\033[32mx\033[0m]'; else box='[ ]'; fi
     fi
+    if [[ "${CM_COMP_CONFIGURE_ELIGIBLE[$repo|$id]:-0}" == "1" ]]; then
+      if [[ -n "$config_value" ]]; then
+        tag+=" \033[36m(→ rebind)\033[0m"
+      else
+        tag+=" \033[36m(→ details)\033[0m"
+      fi
+    fi
     printf '   %b %b %s%b\n' "$mark" "$box" "$label" "$tag"
   done
   if (( end < ${#ids[@]} )); then
@@ -457,9 +475,9 @@ cm_submenu_loop() {
   cm_comp_ids_for_repo "$repo" ids
   title="Configure components"
   if [[ "$mode" == "standalone" ]]; then
-    footer="[↑/↓] move  [space] toggle  [f] favourite  [s] startup  [1-9] workspace  [0] clear  [u] uninstall  [r] reconfigure  [enter] apply"
+    footer="[↑/↓] move  [→] rebind/details  [space] toggle  [f] favourite  [s] startup  [1-9] workspace  [u] uninstall  [enter] apply"
   else
-    footer="[↑/↓] move  [space] toggle  [f] favourite  [s] startup  [1-9] workspace  [0] clear  [u] uninstall  [r] reconfigure  [←/enter] back"
+    footer="[↑/↓] move  [→] rebind/details  [space] toggle  [f] favourite  [s] startup  [1-9] workspace  [u] uninstall  [←/enter] back"
     cm_show_cursor
   fi
   if (( ${#ids[@]} == 0 )); then
@@ -492,6 +510,24 @@ cm_submenu_loop() {
           CM_COMP_ON[$repo|$id]=1
         fi
         cm_reconcile_dependencies "$repo"
+        ;;
+      RIGHT)
+        id="${ids[$sel]:-}"
+        [[ -n "$id" ]] || continue
+        [[ "${CM_COMP_CONFIGURE_ELIGIBLE[$repo|$id]:-0}" == "1" ]] || continue
+        [[ -n "${CM_CONFIGURE_CALLBACK:-}" ]] || continue
+        declare -F "$CM_CONFIGURE_CALLBACK" >/dev/null 2>&1 || continue
+        cm_show_cursor
+        cm_clear
+        isc_log_info "opening nested configurator repo=$repo component=$id"
+        if "$CM_CONFIGURE_CALLBACK" "$repo" "$id"; then
+          CM_COMP_ON[$repo|$id]=1
+          CM_COMP_UNINSTALL[$repo|$id]=0
+          isc_log_info "nested configurator accepted repo=$repo component=$id"
+        else
+          isc_log_warn "nested configurator cancelled or failed repo=$repo component=$id"
+        fi
+        cm_hide_cursor
         ;;
       UNINSTALL)
         id="${ids[$sel]:-}"

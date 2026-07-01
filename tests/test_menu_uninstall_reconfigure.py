@@ -25,6 +25,7 @@ KEYS = {
     "R": "r",
     "F": "f",
     "S": "s",
+    "RIGHT": "\x1b[C",
     **{str(number): str(number) for number in range(10)},
     "ENTER": "\n",
     "Q": "q",
@@ -66,6 +67,12 @@ CM_COMP_WORKSPACE_ELIGIBLE[$repo|alpha]=1
 CM_COMP_WORKSPACE_ELIGIBLE[$repo|beta]=1
 CM_COMP_WORKSPACE[$repo|alpha]=0
 CM_COMP_WORKSPACE[$repo|beta]=4
+CM_COMP_CONFIGURE_ELIGIBLE[$repo|alpha]=1
+CM_COMP_CONFIGURE_ELIGIBLE[$repo|beta]=0
+CM_COMP_CONFIG_VALUE[$repo|alpha]='Super+W'
+CONFIGURED=""
+test_configure_callback() {{ CONFIGURED="$1|$2"; }}
+CM_CONFIGURE_CALLBACK=test_configure_callback
 cm_single_submenu "$repo" >/dev/null 2>&1
 for id in alpha beta; do
   printf '%s.on=%s\\n' "$id" "${{CM_COMP_ON[$repo|$id]:-}}"
@@ -74,6 +81,7 @@ for id in alpha beta; do
   printf '%s.startup=%s\\n' "$id" "${{CM_COMP_STARTUP_ON[$repo|$id]:-}}"
   printf '%s.workspace=%s\\n' "$id" "${{CM_COMP_WORKSPACE[$repo|$id]:-}}"
 done
+printf 'configured=%s\n' "$CONFIGURED"
 """
     result = subprocess.run(
         ["bash", "-c", script],
@@ -158,6 +166,37 @@ def test_number_assigns_workspace_without_changing_install_state():
 def test_zero_clears_workspace_assignment():
     state = drive(["DOWN", "0", "ENTER"])
     assert state["beta.workspace"] == "0"
+
+
+def test_right_opens_nested_component_configurator_and_selects_reconfigure():
+    """RIGHT should open eligible detail UI and mark the component for apply."""
+    state = drive(["RIGHT", "ENTER"])
+    assert state["configured"] == "demo|alpha"
+    assert state["alpha.on"] == "1"
+
+
+def test_configurable_value_is_rendered_with_rebind_action():
+    """Editable components show their current value and explicit rebind affordance."""
+    script = f"""
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_REPOS=("$repo")
+CM_REPO_LABEL[$repo]=Demo
+CM_REPO_ENABLED[$repo]=1
+CM_COMP_IDS[$repo]=alpha
+CM_COMP_LABEL[$repo|alpha]='Switch to workspace 1'
+CM_COMP_INSTALLED[$repo|alpha]=1
+CM_COMP_ON[$repo|alpha]=0
+CM_COMP_CONFIGURE_ELIGIBLE[$repo|alpha]=1
+CM_COMP_CONFIG_VALUE[$repo|alpha]='Super+W'
+LINES=40 cm_render_submenu "$repo" 0 'Configure components' 'footer'
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=REPO, check=False, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert "[Super+W]" in result.stdout
+    assert "rebind" in result.stdout
 
 
 def test_submenu_renders_combined_favorite_and_startup_marker():

@@ -75,9 +75,19 @@ isc_install_menu() { isc_deploy_file component_menu.sh; }
 #   Args: none. Returns: isc_deploy_file status.
 isc_install_runtime() { isc_deploy_file component_runtime.sh; }
 
-# isc_install_helpers - Deploy the shared install-time helpers (optional).
-#   Args: none. Returns: isc_deploy_file status.
-isc_install_helpers() { isc_deploy_file installer_helpers.sh; }
+# isc_install_helpers - Deploy the shared install-time helpers plus the shared
+#   interactive hotkey-capture engine (hotkey_capture.sh + hotkey_capture.py),
+#   which isc_load_helpers sources alongside installer_helpers.sh. Deploying them
+#   together keeps configurable hotkeys available even on the download-cache path
+#   (no sibling checkout). Args: none. Returns: 0 when all deployed; 1 otherwise.
+isc_install_helpers() {
+  local rc=0
+  isc_deploy_file installer_helpers.sh || rc=1
+  isc_deploy_file hotkey_capture.sh    || rc=1
+  isc_deploy_file hotkey_capture.py    || rc=1
+  isc_deploy_file repeatable_fields.py || rc=1
+  return "$rc"
+}
 
 # isc_install_summary - Report where the framework was installed and how
 #   consumers resolve it. Runs once after the selected components.

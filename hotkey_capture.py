@@ -1,0 +1,765 @@
+"""hotkey_capture.py - shared interactive press-to-capture hotkey engine.
+
+This is the single source of truth for the configurable-hotkey experience every
+setup repository consumes (it is not hard-coded to any one repo). A user picks a
+component to install and then *presses* the keys they want: each modifier press
+(Ctrl, Alt, Super, Shift) is accumulated as a modifier, a single non-modifier
+press becomes the key, duplicate presses are ignored, and the running selection
+is shown in ``Super+Shift+S`` form. The Backspace key removes the most recent
+input. When the binding is confirmed it is converted to the canonical GTK
+accelerator (``<Super><Shift>s``) that ``gsettings`` expects.
+
+Two capture flavours are supported:
+
+* keyboard accelerators (the default) — the key is a normal keyboard key and the
+  result is a GTK accelerator string;
+* pointer/mouse triggers (``mouse_mode``) — used by the window-placement tiling
+  service, where the "key" is a mouse Back/Forward button. Because a terminal
+  installer may not be able to receive the physical side buttons, the keyboard
+  ``F`` and ``B`` keys stand in for Forward and Back respectively.
+
+The pure state machine (:class:`HotkeyBinding`), the accelerator conversion and
+the conflict detection are all import-safe and unit-tested. The evdev capture
+driver is a thin best-effort I/O layer that degrades to the caller's default
+when no input device can be read (for example a non-interactive install).
+
+Components:
+  - MODIFIER_ALIASES / MODIFIER_ORDER: canonical modifier vocabulary.
+  - EVDEV_MODIFIERS / EVDEV_MOUSE_BUTTONS: evdev key-name to token maps.
+  - HotkeyBinding: the press/back/format/accelerator state machine.
+  - to_gnome_accelerator / normalize_accelerator: friendly<->GTK conversion.
+  - find_conflicts / describe_conflicts: GNOME default collision reporting.
+  - capture_binding: evdev press-to-capture driver (best effort).
+  - main: CLI entrypoint used by hotkey_capture.sh.
+
+Usage:
+  python3 hotkey_capture.py accel super+shift+s        # -> <Shift><Super>s
+  python3 hotkey_capture.py capture --label screenshot --default '<Shift><Super>s' --single-key
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+from typing import Iterable, Iterator
+
+from logging_utils import get_logger, log_call
+
+LOGGER = get_logger("hotkey_capture", "hotkey_capture.log")
+
+# Accepted spellings for each modifier mapped to the canonical GTK keyword that
+# appears inside angle brackets. Comparison is case-insensitive.
+MODIFIER_ALIASES = {
+    "ctrl": "Control",
+    "control": "Control",
+    "alt": "Alt",
+    "meta": "Alt",
+    "super": "Super",
+    "win": "Super",
+    "windows": "Super",
+    "cmd": "Super",
+    "shift": "Shift",
+}
+
+# Emit modifiers in a stable canonical order regardless of press order so the
+# resulting accelerator is deterministic and matches GNOME's own conventions.
+MODIFIER_ORDER = ["Control", "Alt", "Super", "Shift"]
+
+# Short display names shown in the "+"-joined live preview.
+MODIFIER_DISPLAY = {
+    "Control": "Ctrl",
+    "Alt": "Alt",
+    "Super": "Super",
+    "Shift": "Shift",
+}
+
+# evdev key names (ecodes.KEY[...] / BTN[...]) mapped to a canonical modifier.
+EVDEV_MODIFIERS = {
+    "KEY_LEFTCTRL": "Control",
+    "KEY_RIGHTCTRL": "Control",
+    "KEY_LEFTALT": "Alt",
+    "KEY_RIGHTALT": "Alt",
+    "KEY_LEFTMETA": "Super",
+    "KEY_RIGHTMETA": "Super",
+    "KEY_LEFTSHIFT": "Shift",
+    "KEY_RIGHTSHIFT": "Shift",
+}
+
+# evdev button/key names mapped to the mouse trigger tokens used by mouse_mode.
+EVDEV_MOUSE_BUTTONS = {
+    "BTN_BACK": "MouseBack",
+    "BTN_SIDE": "MouseBack",
+    "BTN_FORWARD": "MouseForward",
+    "BTN_EXTRA": "MouseForward",
+    # Keyboard stand-ins for machines/terminals without side buttons.
+    "KEY_B": "MouseBack",
+    "KEY_F": "MouseForward",
+}
+
+# Mouse trigger token -> the evdev button name the tiler service watches for.
+MOUSE_TRIGGER_EVENT = {
+    "MouseBack": "BTN_BACK",
+    "MouseForward": "BTN_FORWARD",
+}
+
+# Named (non-alphanumeric) keyboard keys mapped from evdev names to the GTK
+# accelerator key spelling. Anything not listed falls back to the letter/number.
+EVDEV_NAMED_KEYS = {
+    "KEY_SPACE": "space",
+    "KEY_ENTER": "Return",
+    "KEY_TAB": "Tab",
+    "KEY_ESC": "Escape",
+    "KEY_SYSRQ": "Print",
+    "KEY_PRINT": "Print",
+    "KEY_HOME": "Home",
+    "KEY_END": "End",
+    "KEY_PAGEUP": "Page_Up",
+    "KEY_PAGEDOWN": "Page_Down",
+    "KEY_LEFT": "Left",
+    "KEY_RIGHT": "Right",
+    "KEY_UP": "Up",
+    "KEY_DOWN": "Down",
+    "KEY_DELETE": "Delete",
+    "KEY_INSERT": "Insert",
+}
+
+# evdev names that confirm the current binding (accept it as final).
+EVDEV_CONFIRM_KEYS = {"KEY_ENTER", "KEY_KPENTER"}
+# evdev names that remove the most recent input (the "Back" key from the goal).
+EVDEV_BACK_KEYS = {"KEY_BACKSPACE"}
+# evdev names that cancel capture and keep the default.
+EVDEV_CANCEL_KEYS = {"KEY_ESC"}
+
+
+class HotkeyBinding:
+    """Accumulate modifiers and a single key from discrete key presses.
+
+    The binding records an *ordered* history of presses so that
+    :meth:`back` can undo exactly the most recent one. Modifiers are
+    de-duplicated (pressing Ctrl twice adds it once); only one non-modifier key
+    is ever held (pressing a second key replaces the first, honoring the "many
+    modifiers but only one key" rule).
+    """
+
+    def __init__(self, mouse_mode: bool = False) -> None:
+        self.mouse_mode = mouse_mode
+        # Ordered press history of (kind, name) where kind is "mod" or "key".
+        self._events: list[tuple[str, str]] = []
+
+    @property
+    def modifiers(self) -> list[str]:
+        """Return the accumulated modifiers in canonical emit order."""
+        held = {name for kind, name in self._events if kind == "mod"}
+        return [name for name in MODIFIER_ORDER if name in held]
+
+    @property
+    def key(self) -> str | None:
+        """Return the current non-modifier key, or ``None`` when unset."""
+        keys = [name for kind, name in self._events if kind == "key"]
+        return keys[-1] if keys else None
+
+    def is_empty(self) -> bool:
+        """Return True when nothing has been captured yet."""
+        return not self._events
+
+    def is_complete(self) -> bool:
+        """Return True when a key has been captured (a bindable hotkey)."""
+        return self.key is not None
+
+    def add_modifier(self, name: str) -> str:
+        """Add a modifier, ignoring duplicates.
+
+        Args:
+            name: A canonical modifier name (``Control``/``Alt``/``Super``/``Shift``).
+
+        Returns:
+            ``"added"`` when newly recorded, ``"duplicate"`` when already held.
+        """
+        if name not in MODIFIER_ORDER:
+            raise ValueError(f"unknown modifier {name!r}")
+        if any(kind == "mod" and held == name for kind, held in self._events):
+            return "duplicate"
+        self._events.append(("mod", name))
+        return "added"
+
+    def set_key(self, name: str) -> str:
+        """Set the single key, replacing any previous key.
+
+        Args:
+            name: The key spelling (a letter, named key, or mouse trigger token).
+
+        Returns:
+            ``"added"`` when no key was held before, otherwise ``"replaced"``.
+        """
+        had_key = self.key is not None
+        self._events = [event for event in self._events if event[0] != "key"]
+        self._events.append(("key", name))
+        return "replaced" if had_key else "added"
+
+    def back(self) -> tuple[str, str] | None:
+        """Remove and return the most recent press, or ``None`` when empty."""
+        if not self._events:
+            return None
+        return self._events.pop()
+
+    def clear(self) -> None:
+        """Discard all captured input."""
+        self._events = []
+
+    def display(self) -> str:
+        """Render the live ``Ctrl+Super+S`` style preview.
+
+        Modifiers are shown in canonical order using their short names and the
+        key (if any) is upper-cased for single letters. An empty binding renders
+        as ``(none)``.
+        """
+        parts = [MODIFIER_DISPLAY[name] for name in self.modifiers]
+        if self.key is not None:
+            key = self.key
+            parts.append(key.upper() if len(key) == 1 else key)
+        return "+".join(parts) if parts else "(none)"
+
+    def to_accelerator(self) -> str:
+        """Return the canonical GTK accelerator (``<Super><Shift>s``).
+
+        Raises:
+            ValueError: When no key is set, or in ``mouse_mode`` where the key is
+                a pointer button that has no GTK accelerator representation.
+        """
+        if self.key is None:
+            raise ValueError("no key captured")
+        if self.key in MOUSE_TRIGGER_EVENT:
+            raise ValueError(f"mouse trigger {self.key!r} has no GTK accelerator")
+        prefix = "".join(f"<{name}>" for name in self.modifiers)
+        return f"{prefix}{self.key}"
+
+    def to_trigger(self) -> tuple[list[str], str]:
+        """Return ``(modifiers, event_name)`` for a pointer-driven trigger.
+
+        Used by the window-placement tiling service, whose "hotkey" is a set of
+        held modifiers plus a mouse Back/Forward button rather than a GTK
+        accelerator.
+
+        Raises:
+            ValueError: When the captured key is not a mouse trigger token.
+        """
+        if self.key not in MOUSE_TRIGGER_EVENT:
+            raise ValueError(f"{self.key!r} is not a mouse trigger")
+        return self.modifiers, MOUSE_TRIGGER_EVENT[self.key]
+
+
+def token_for_evdev_key(name: str, mouse_mode: bool = False) -> tuple[str, str] | None:
+    """Map an evdev key/button name to a ``(kind, value)`` binding token.
+
+    Args:
+        name: An evdev name such as ``KEY_LEFTCTRL``, ``KEY_S`` or ``BTN_BACK``.
+        mouse_mode: When True, side buttons and the ``F``/``B`` stand-ins map to
+            mouse trigger tokens; otherwise ``F``/``B`` are ordinary letters.
+
+    Returns:
+        ``("mod", canonical)`` for a modifier, ``("key", spelling)`` for a key or
+        mouse trigger, or ``None`` when the name is not bindable.
+    """
+    if name in EVDEV_MODIFIERS:
+        return ("mod", EVDEV_MODIFIERS[name])
+    if mouse_mode and name in EVDEV_MOUSE_BUTTONS:
+        return ("key", EVDEV_MOUSE_BUTTONS[name])
+    if not mouse_mode and name in EVDEV_NAMED_KEYS:
+        return ("key", EVDEV_NAMED_KEYS[name])
+    if name in EVDEV_NAMED_KEYS:
+        return ("key", EVDEV_NAMED_KEYS[name])
+    if name.startswith("KEY_"):
+        raw = name[len("KEY_"):]
+        if len(raw) == 1 and raw.isalnum():
+            return ("key", raw.lower())
+    return None
+
+
+@log_call(LOGGER)
+def to_gnome_accelerator(spec: str) -> str:
+    """Convert a friendly ``modifier+key`` spec to a GTK accelerator string.
+
+    The final ``+``-separated token is the key; every preceding token must be a
+    recognized modifier. Modifiers are de-duplicated and emitted in canonical
+    order; the key token is preserved verbatim.
+
+    Raises:
+        ValueError: When the spec is empty, malformed, or names an unknown
+            modifier.
+    """
+    raw = (spec or "").strip()
+    if not raw:
+        raise ValueError("empty hotkey specification")
+    tokens = [part.strip() for part in raw.split("+")]
+    if any(not token for token in tokens):
+        raise ValueError(f"malformed hotkey {spec!r}: empty modifier or key")
+    *modifier_tokens, key = tokens
+    if not key:
+        raise ValueError(f"hotkey {spec!r} has no key")
+    seen: set[str] = set()
+    for token in modifier_tokens:
+        canonical = MODIFIER_ALIASES.get(token.lower())
+        if canonical is None:
+            raise ValueError(f"unknown modifier {token!r} in hotkey {spec!r}")
+        seen.add(canonical)
+    prefix = "".join(f"<{name}>" for name in MODIFIER_ORDER if name in seen)
+    return f"{prefix}{key}"
+
+
+_GTK_MODIFIER_RE = re.compile(r"<([^>]+)>")
+
+
+def normalize_accelerator(text: str) -> tuple[frozenset[str], str]:
+    """Reduce a friendly or GTK accelerator to a comparable (modifiers, key).
+
+    Makes ``<Super><Alt>e`` and ``alt+super+E`` compare equal so conflict
+    detection is order- and case-insensitive.
+
+    Raises:
+        ValueError: When the spec is empty, has no key, or names an unknown
+            modifier.
+    """
+    value = (text or "").strip()
+    if not value:
+        raise ValueError("empty accelerator")
+    modifiers: set[str] = set()
+    if "<" in value:
+        for token in _GTK_MODIFIER_RE.findall(value):
+            canonical = MODIFIER_ALIASES.get(token.lower())
+            if canonical is None:
+                raise ValueError(f"unknown modifier {token!r} in accelerator {text!r}")
+            modifiers.add(canonical)
+        key = _GTK_MODIFIER_RE.sub("", value)
+    else:
+        parts = [part.strip() for part in value.split("+") if part.strip()]
+        if not parts:
+            raise ValueError(f"accelerator {text!r} has no key")
+        *modifier_tokens, key = parts
+        for token in modifier_tokens:
+            canonical = MODIFIER_ALIASES.get(token.lower())
+            if canonical is None:
+                raise ValueError(f"unknown modifier {token!r} in accelerator {text!r}")
+            modifiers.add(canonical)
+    if not key:
+        raise ValueError(f"accelerator {text!r} has no key")
+    return frozenset(modifiers), key.lower()
+
+
+def display_accelerator(text: str) -> str:
+    """Render a friendly ``Ctrl+Super+W`` value from GTK or typed syntax."""
+    modifiers, key = normalize_accelerator(text)
+    parts = [MODIFIER_DISPLAY[name] for name in MODIFIER_ORDER if name in modifiers]
+    parts.append(key.upper() if len(key) == 1 else key)
+    return "+".join(parts)
+
+
+def normalize_modifier(text: str) -> str:
+    """Return one canonical modifier, rejecting chords and non-modifier keys."""
+    raw = (text or "").strip()
+    if not raw or "+" in raw or "<" in raw or ">" in raw:
+        raise ValueError("enter exactly one modifier: Shift, Ctrl, Alt, or Super")
+    modifier = MODIFIER_ALIASES.get(raw.lower())
+    if modifier is None:
+        raise ValueError(f"unknown modifier {text!r}")
+    return modifier
+
+
+def add_modifier_to_accelerator(accelerator: str, modifier: str) -> str:
+    """Add one modifier to an accelerator without allowing a no-op collision."""
+    modifiers, key = normalize_accelerator(accelerator)
+    canonical = normalize_modifier(modifier)
+    if canonical in modifiers:
+        raise ValueError(
+            f"{MODIFIER_DISPLAY[canonical]} is already part of {display_accelerator(accelerator)}"
+        )
+    combined = set(modifiers)
+    combined.add(canonical)
+    prefix = "".join(f"<{name}>" for name in MODIFIER_ORDER if name in combined)
+    return f"{prefix}{key}"
+
+
+def _read_config_value(path: Path, key: str, default: str = "") -> str:
+    """Read one known key from a simple installer-owned ``KEY=value`` file."""
+    if not path.is_file():
+        return default
+    for line in path.read_text(encoding="utf-8").splitlines():
+        name, separator, value = line.partition("=")
+        if separator and name == key:
+            return value
+    return default
+
+
+def _set_config_value(path: Path, key: str, value: str) -> None:
+    """Atomically update one validated value without evaluating shell syntax."""
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+        raise ValueError(f"invalid config key {key!r}")
+    if "\n" in value or "\r" in value:
+        raise ValueError("config values cannot contain newlines")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    updated: list[str] = []
+    replaced = False
+    for line in lines:
+        name, separator, _old = line.partition("=")
+        if separator and name == key:
+            updated.append(f"{key}={value}")
+            replaced = True
+        else:
+            updated.append(line)
+    if not replaced:
+        updated.append(f"{key}={value}")
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write("\n".join(updated) + "\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def find_conflicts(
+    accelerator: str, candidates: Iterable[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """Return the ``(identifier, stored)`` candidates that shadow ``accelerator``.
+
+    Args:
+        accelerator: A friendly or GTK accelerator the user is assigning.
+        candidates: Iterable of ``(identifier, stored_accelerator)`` pairs, e.g.
+            ``("org.gnome.shell.keybindings show-screenshot-ui", "<Shift><Super>s")``.
+
+    Returns:
+        The candidate pairs whose stored accelerator matches, unparsable stored
+        values skipped.
+    """
+    try:
+        target = normalize_accelerator(accelerator)
+    except ValueError:
+        return []
+    matches: list[tuple[str, str]] = []
+    for identifier, stored in candidates:
+        try:
+            if normalize_accelerator(stored) == target:
+                matches.append((identifier, stored))
+        except ValueError:
+            continue
+    return matches
+
+
+def describe_conflicts(conflicts: list[tuple[str, str]]) -> list[str]:
+    """Render human-readable "will be unbound" lines for a conflict list."""
+    return [
+        f"{identifier}  (currently {stored}) will be unbound"
+        for identifier, stored in conflicts
+    ]
+
+
+def _read_conflict_candidates(stream) -> list[tuple[str, str]]:
+    """Parse ``identifier<TAB>accelerator`` lines into candidate pairs."""
+    candidates: list[tuple[str, str]] = []
+    for line in stream:
+        line = line.rstrip("\n")
+        if not line.strip():
+            continue
+        identifier, tab, accel = line.partition("\t")
+        if not tab:
+            continue
+        candidates.append((identifier.strip(), accel.strip()))
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# evdev capture driver (best effort; not exercised by unit tests)
+# ---------------------------------------------------------------------------
+
+
+def _open_input_devices():
+    """Yield readable evdev InputDevices that emit keys or buttons.
+
+    Returns an empty list when evdev is unavailable or nothing can be opened, so
+    the caller falls back to the default without raising.
+    """
+    try:
+        from evdev import InputDevice, ecodes, list_devices
+    except Exception as error:  # pragma: no cover - environment dependent
+        LOGGER.warning("evdev unavailable: %s", error)
+        return []
+    devices = []
+    for path in list_devices():
+        try:
+            dev = InputDevice(path)
+        except OSError:
+            continue
+        caps = dev.capabilities(absinfo=False)
+        if ecodes.EV_KEY in caps:
+            devices.append(dev)
+        else:
+            dev.close()
+    return devices
+
+
+def capture_binding(
+    label: str,
+    default: str,
+    *,
+    single_key: bool = False,
+    mouse_mode: bool = False,
+    conflicts: list[tuple[str, str]] | None = None,
+    out=sys.stderr,
+) -> str | None:
+    """Interactively capture one hotkey by reading key presses from evdev.
+
+    Prints a live ``+``-joined preview and real-time conflict warnings to
+    ``out``. Returns the chosen GTK accelerator (or ``modifiers|EVENT`` for a
+    mouse trigger) on confirm, the ``default`` on cancel, or ``None`` when no
+    input device is readable (the caller then keeps its default).
+
+    Args:
+        label: Human description shown in the prompt.
+        default: The accelerator kept when the user cancels or capture is
+            unavailable.
+        single_key: When True, only one key and no modifiers are captured
+            (used for the single-key screenshot binding).
+        mouse_mode: Capture a pointer Back/Forward trigger instead of a key.
+        conflicts: ``(identifier, stored)`` candidates to warn about live.
+        out: Stream for the interactive prompt (defaults to stderr).
+    """
+    try:
+        from evdev import categorize, ecodes
+    except Exception as error:  # pragma: no cover
+        LOGGER.warning("evdev unavailable, keeping default: %s", error)
+        return None
+
+    devices = _open_input_devices()
+    if not devices:
+        print("  (no readable input device — keeping default)", file=out)
+        return None
+
+    from select import select
+
+    conflicts = conflicts or []
+    binding = HotkeyBinding(mouse_mode=mouse_mode)
+
+    def render() -> None:
+        preview = binding.display()
+        print(f"\r\033[K  {label}: {preview}", end="", file=out, flush=True)
+        if binding.is_complete() and not mouse_mode:
+            try:
+                accel = binding.to_accelerator()
+                hits = find_conflicts(accel, conflicts)
+                for line in describe_conflicts(hits):
+                    print(f"\n    ! {line}", end="", file=out, flush=True)
+            except ValueError:
+                pass
+
+    print(
+        f"\nPress keys for '{label}'. Modifiers accumulate; "
+        f"{'one key' if single_key else 'one key + any modifiers'}.",
+        file=out,
+    )
+    if mouse_mode:
+        print(
+            "  Mouse Back/Forward = the trigger button. No side buttons? "
+            "Press keyboard B (=Back) or F (=Forward).",
+            file=out,
+        )
+    print(
+        f"  Backspace = remove last, Enter = confirm, Esc = keep default [{default}].",
+        file=out,
+    )
+    render()
+
+    for dev in devices:
+        try:
+            dev.grab()
+        except OSError:
+            LOGGER.debug("could not grab %s", getattr(dev, "path", "?"))
+
+    import time
+
+    result: str | None = default
+    idle_timeout = 120.0  # never block the installer forever; keep default if idle
+    last_activity = time.monotonic()
+    try:
+        active = True
+        while active:
+            ready, _, _ = select(devices, [], [], 1.0)
+            if not ready:
+                if time.monotonic() - last_activity > idle_timeout:
+                    print("\n  (no input — keeping default)", file=out)
+                    result = default
+                    break
+                continue
+            last_activity = time.monotonic()
+            for dev in ready:
+                try:
+                    events = list(dev.read())
+                except OSError:
+                    continue
+                for event in events:
+                    if event.type != ecodes.EV_KEY or event.value != 1:
+                        continue  # key-down only
+                    keyname = _event_keyname(categorize(event))
+                    if keyname in EVDEV_CONFIRM_KEYS:
+                        if binding.is_complete():
+                            result = _finalize(binding, mouse_mode)
+                            active = False
+                            break
+                        continue
+                    if keyname in EVDEV_CANCEL_KEYS:
+                        result = default
+                        active = False
+                        break
+                    if keyname in EVDEV_BACK_KEYS:
+                        binding.back()
+                        render()
+                        continue
+                    token = token_for_evdev_key(keyname, mouse_mode=mouse_mode)
+                    if token is None:
+                        continue
+                    kind, value = token
+                    if single_key:
+                        if kind == "key":
+                            binding.clear()
+                            binding.set_key(value)
+                    elif kind == "mod":
+                        binding.add_modifier(value)
+                    else:
+                        binding.set_key(value)
+                    render()
+                if not active:
+                    break
+    finally:
+        for dev in devices:
+            try:
+                dev.ungrab()
+            except OSError:
+                pass
+            dev.close()
+        print("", file=out)
+    return result
+
+
+def _event_keyname(categorized) -> str:
+    """Return a single evdev key name from a categorized key event."""
+    keycode = getattr(categorized, "keycode", "")
+    if isinstance(keycode, (list, tuple)):
+        return keycode[0] if keycode else ""
+    return keycode
+
+
+def _finalize(binding: HotkeyBinding, mouse_mode: bool) -> str:
+    """Serialize a completed binding to the string the shell consumes."""
+    if mouse_mode:
+        modifiers, event = binding.to_trigger()
+        return f"{'+'.join(modifiers)}|{event}"
+    return binding.to_accelerator()
+
+
+@log_call(LOGGER)
+def main(argv: list[str] | None = None) -> int:
+    """CLI entrypoint used by hotkey_capture.sh."""
+    parser = argparse.ArgumentParser(description="Interactive hotkey capture")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    accel = sub.add_parser("accel", help="Convert friendly spec to GTK accelerator")
+    accel.add_argument("spec")
+
+    display = sub.add_parser("display", help="Render a friendly accelerator value")
+    display.add_argument("spec")
+
+    modifier = sub.add_parser("modifier", help="Validate exactly one modifier")
+    modifier.add_argument("spec")
+
+    add_modifier = sub.add_parser("add-modifier", help="Add a modifier to an accelerator")
+    add_modifier.add_argument("accelerator")
+    add_modifier.add_argument("modifier")
+
+    config_get = sub.add_parser("config-get", help="Read one persisted field")
+    config_get.add_argument("path")
+    config_get.add_argument("key")
+    config_get.add_argument("default", nargs="?", default="")
+
+    config_set = sub.add_parser("config-set", help="Persist one validated field")
+    config_set.add_argument("path")
+    config_set.add_argument("key")
+    config_set.add_argument("value")
+
+    cap = sub.add_parser("capture", help="Interactively capture a hotkey")
+    cap.add_argument("--label", required=True)
+    cap.add_argument("--default", required=True)
+    cap.add_argument("--single-key", action="store_true")
+    cap.add_argument("--mouse", action="store_true")
+
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    if args.command == "accel":
+        try:
+            print(to_gnome_accelerator(args.spec))
+        except ValueError as error:
+            print(f"Invalid hotkey: {error}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.command == "display":
+        try:
+            print(display_accelerator(args.spec))
+        except ValueError as error:
+            print(f"Invalid hotkey: {error}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.command == "modifier":
+        try:
+            print(normalize_modifier(args.spec))
+        except ValueError as error:
+            print(f"Invalid modifier: {error}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.command == "add-modifier":
+        try:
+            print(add_modifier_to_accelerator(args.accelerator, args.modifier))
+        except ValueError as error:
+            print(f"Invalid move modifier: {error}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.command == "config-get":
+        print(_read_config_value(Path(args.path), args.key, args.default))
+        return 0
+
+    if args.command == "config-set":
+        try:
+            _set_config_value(Path(args.path), args.key, args.value)
+        except (OSError, ValueError) as error:
+            print(f"Could not save field: {error}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.command == "capture":
+        conflicts = []
+        if not sys.stdin.isatty():
+            conflicts = _read_conflict_candidates(sys.stdin)
+        chosen = capture_binding(
+            args.label,
+            args.default,
+            single_key=args.single_key,
+            mouse_mode=args.mouse,
+            conflicts=conflicts,
+        )
+        if chosen is None:
+            chosen = args.default
+        print(chosen)
+        return 0
+
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

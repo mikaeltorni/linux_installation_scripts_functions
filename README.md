@@ -25,6 +25,12 @@ See the full cross-repository map in
 |---|---|
 | `component_menu.sh` | Pure-Bash TUI engine: a two-level selection menu (repository rows with enable/disable, per-repository component submenus, and live `on/total` counts). No external dependencies. |
 | `component_runtime.sh` | The per-repository installer contract: `--list-components`, `--select id,…`, `--default`, `--all`, an interactive submenu, and optional `ISC_PREFLIGHT` / `ISC_POSTFLIGHT` hooks. |
+| `repeatable_fields.py` | Shared one-based row mutations for repository-owned configurators that add repeated values and edit boolean/group metadata. `isc_load_helpers` exports its installed path as `ISC_REPEATABLE_FIELDS_PY`. |
+
+Component manifests may use a ninth `configure_fn` field. The shared submenu
+shows `[→] details` for those rows and invokes the repository-owned screen via
+`--configure-component ID`; `--list-configurable-components` lets the aggregate
+master menu discover the same nested screens without sourcing child internals.
 | `component_loader.sh` | Resolves and activates the framework from a sibling checkout or by downloading it; exposes `isc_activate_components`. |
 | `component_logging.sh` | Centralized, dependency-free leveled logging (`verbose`/`debug`/`info`/`warn`/`error`) written to a per-repository `.log/` file with timestamps and a context tag. Sourced automatically by the loader, runtime, and menu; degrades to silent no-ops when absent. |
 | `installer_helpers.sh` | Shared install-time helpers (`run_as_target`, `msg`, `need_cmd`, `apt_install`, linked-repository auth gating, session-bus/root guards, and sudo-deferral reporting) loaded through `isc_load_helpers`; uses the same best-effort file logger. |
@@ -108,8 +114,8 @@ component_main "$@"
 
 The manifest maps component ids to the installer's own step functions. Each
 entry is
-`id|label|default|install_fn[|detect_fn[|uninstall_fn[|section[|requires]]]]`;
-the final four fields are optional:
+`id|label|default|install_fn[|detect_fn[|uninstall_fn[|section[|requires[|configure_fn[|config_status_fn]]]]]]`;
+the trailing fields are optional:
 
 ```bash
 ISC_REPO_NAME="example_repo"
@@ -137,6 +143,14 @@ ISC_COMPONENTS=(
 * `requires` is a comma-separated list of component ids. A dependent row can be
   selected only when every requirement is selected in the same run or detected
   as already installed. Requirements must precede dependents in manifest order.
+* `configure_fn` opens a repository-owned typed/details screen when the user
+  presses RIGHT. `config_status_fn` is side-effect free and prints the current
+  friendly value shown in brackets, such as `[Super+W]`; the menu labels the
+  action `(→ rebind)`.
+
+For hotkeys, `isc_prompt_hotkey_field` accepts multiple modifiers plus exactly
+one key, while `isc_prompt_modifier_field` accepts exactly one modifier. Both
+persist validated values for standalone and aggregate master installers.
 
 The runtime writes a receipt after each successful install and clears it after a
 successful uninstall, so install state stays accurate across runs.
@@ -151,6 +165,9 @@ bash install.sh --select a,b     # install exactly these component ids
 bash install.sh --reconfigure a  # re-apply (idempotent re-run) of these ids
 bash install.sh --uninstall a,b  # uninstall exactly these component ids
 bash install.sh --list-components  # print: id<TAB>label<TAB>default[<TAB>section[<TAB>requires]]
+bash install.sh --list-configurable-components
+bash install.sh --list-component-config-values  # id<TAB>friendly current value
+bash install.sh --configure-component a         # open a nested field/details screen
 bash install.sh --detect         # print: id<TAB>installed|absent
 ```
 
@@ -159,7 +176,8 @@ selects an installed component for **reconfigure** (`~`), `[u]` marks it for
 **uninstall** (`✗`), `[r]` marks every installed component for reconfigure,
 `[f]` toggles GNOME dock favourite selection, and `[s]` toggles launch at
 desktop login for app components that expose the corresponding metadata. Rows
-show `F`, `S`, or `FS` when either or both app actions are selected.
+show `F`, `S`, or `FS` when either or both app actions are selected. Editable
+rows show their current value in brackets; RIGHT opens the rebind/details field.
 
 In the aggregate master menu, setting `ISC_MENU_DEBUG=1` exposes `[l] log state`.
 That action writes a quiet snapshot of every repository and component state

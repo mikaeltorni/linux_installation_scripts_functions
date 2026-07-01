@@ -22,5 +22,5 @@ ISC_REPO_LABEL="Shared installer component framework"
 ISC_COMPONENTS=(
   "menu|Interactive selection menu engine (component_menu.sh)|on|isc_install_menu"
   "runtime|Per-repository installer runtime contract (component_runtime.sh)|on|isc_install_runtime"
-  "installer_helpers|Shared install-time helpers (installer_helpers.sh)|on|isc_install_helpers"
+  "installer_helpers|Shared install-time helpers + hotkey-capture engine|on|isc_install_helpers"
 )

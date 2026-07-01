@@ -92,14 +92,15 @@ fi
 # Arguments:
 #   $1 - component id to look up.
 #   $2 - field index: 0=id, 1=label, 2=default, 3=function, 4=detect,
-#        5=uninstall, 6=section, 7=requires.
+#        5=uninstall, 6=section, 7=requires, 8=nested configurator,
+#        9=config status function.
 #
 # Returns:
 #   0 and prints the requested field when the id exists; 1 when no entry matches.
 _isc_field() {
-  local want_id="$1" field="$2" entry id label def fn detect uninstall section requires
+  local want_id="$1" field="$2" entry id label def fn detect uninstall section requires configure status
   for entry in "${ISC_COMPONENTS[@]}"; do
-    IFS='|' read -r id label def fn detect uninstall section requires <<<"$entry"
+    IFS='|' read -r id label def fn detect uninstall section requires configure status <<<"$entry"
     if [[ "$id" == "$want_id" ]]; then
       case "$field" in
         0) printf '%s' "$id" ;;
@@ -110,6 +111,8 @@ _isc_field() {
         5) printf '%s' "$uninstall" ;;
         6) printf '%s' "$section" ;;
         7) printf '%s' "$requires" ;;
+        8) printf '%s' "$configure" ;;
+        9) printf '%s' "$status" ;;
       esac
       return 0
     fi
@@ -318,9 +321,9 @@ _isc_default_ids() {
 # Returns:
 #   0; prints one tab-separated line per component.
 _isc_list_components() {
-  local entry id label def fn detect uninstall section requires
+  local entry id label def fn detect uninstall section requires configure
   for entry in "${ISC_COMPONENTS[@]}"; do
-    IFS='|' read -r id label def fn detect uninstall section requires <<<"$entry"
+    IFS='|' read -r id label def fn detect uninstall section requires configure <<<"$entry"
     if [[ -n "$requires" ]]; then
       printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$label" "$def" "$section" "$requires"
     elif [[ -n "$section" ]]; then
@@ -329,6 +332,44 @@ _isc_list_components() {
       printf '%s\t%s\t%s\n' "$id" "$label" "$def"
     fi
   done
+}
+
+# List component ids that expose repository-owned nested configuration screens.
+_isc_list_configurable_components() {
+  local id configure
+  while IFS= read -r id; do
+    configure="$(_isc_field "$id" 8)"
+    [[ -n "$configure" ]] && printf '%s\n' "$id"
+  done < <(_isc_all_ids)
+  return 0
+}
+
+# Print ``id<TAB>friendly current value`` for editable components whose tenth
+# manifest field names a side-effect-free status function.
+_isc_list_component_config_values() {
+  local id status value
+  while IFS= read -r id; do
+    status="$(_isc_field "$id" 9)"
+    [[ -n "$status" ]] || continue
+    declare -F "$status" >/dev/null 2>&1 || continue
+    value="$("$status" 2>/dev/null || true)"
+    [[ -n "$value" ]] && printf '%s\t%s\n' "$id" "$value"
+  done < <(_isc_all_ids)
+}
+
+# Run one component's nested configurator without installing the component.
+_isc_configure_component() {
+  local id="$1" configure
+  configure="$(_isc_field "$id" 8)" || {
+    isc_log_error "unknown component requested for nested configuration: $id"
+    return 2
+  }
+  if [[ -z "$configure" ]] || ! declare -F "$configure" >/dev/null 2>&1; then
+    isc_log_error "component '$id' has no callable nested configurator"
+    return 2
+  fi
+  isc_log_info "running nested configurator component=$id function=$configure"
+  "$configure"
 }
 
 # Decide whether every requirement for component id $1 is either selected in
@@ -455,6 +496,9 @@ Usage:
   bash install.sh --uninstall a,b,c    Uninstall exactly these component ids
   bash install.sh --auth          Allow authenticated Git clone/pull in components
   bash install.sh --list-components  List: id<TAB>label<TAB>default[<TAB>section[<TAB>requires]]
+  bash install.sh --list-configurable-components  List ids with nested detail screens
+  bash install.sh --list-component-config-values  List editable ids and current values
+  bash install.sh --configure-component ID  Open one nested detail screen
   bash install.sh --detect        Show install state as: id<TAB>installed|absent
   bash install.sh --help          Show this help
 
@@ -521,6 +565,17 @@ _isc_interactive_select() {
     CM_COMP_LABEL[$repo|$id]="$(_isc_field "$id" 1)"
     CM_COMP_SECTION[$repo|$id]="$(_isc_field "$id" 6)"
     CM_COMP_REQUIRES[$repo|$id]="$(_isc_field "$id" 7)"
+    if [[ -n "$(_isc_field "$id" 8)" ]]; then
+      CM_COMP_CONFIGURE_ELIGIBLE[$repo|$id]=1
+    else
+      CM_COMP_CONFIGURE_ELIGIBLE[$repo|$id]=0
+    fi
+    CM_COMP_CONFIG_VALUE[$repo|$id]=""
+    local status_fn
+    status_fn="$(_isc_field "$id" 9)"
+    if [[ -n "$status_fn" ]] && declare -F "$status_fn" >/dev/null 2>&1; then
+      CM_COMP_CONFIG_VALUE[$repo|$id]="$("$status_fn" 2>/dev/null || true)"
+    fi
     CM_COMP_UNINSTALL[$repo|$id]=0
     # Reflect live install state so the menu can show installed/reconfigure
     # markers and offer uninstall. Already-installed components default to
@@ -536,6 +591,16 @@ _isc_interactive_select() {
     fi
   done < <(_isc_all_ids)
   CM_COMP_IDS[$repo]="${ids% }"
+  _isc_menu_configure_callback() {
+    local callback_repo="$1" callback_id="$2" status_fn
+    [[ "$callback_repo" == "$repo" ]] || return 2
+    _isc_configure_component "$callback_id" || return $?
+    status_fn="$(_isc_field "$callback_id" 9)"
+    if [[ -n "$status_fn" ]] && declare -F "$status_fn" >/dev/null 2>&1; then
+      CM_COMP_CONFIG_VALUE[$repo|$callback_id]="$("$status_fn" 2>/dev/null || true)"
+    fi
+  }
+  CM_CONFIGURE_CALLBACK=_isc_menu_configure_callback
   declare -F cm_reconcile_dependencies >/dev/null 2>&1 && cm_reconcile_dependencies "$repo"
 
   if cm_single_submenu "$repo"; then
@@ -580,6 +645,10 @@ component_main() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --list-components) _isc_list_components; return 0 ;;
+      --list-configurable-components) _isc_list_configurable_components; return 0 ;;
+      --list-component-config-values) _isc_list_component_config_values; return 0 ;;
+      --configure-component) _isc_configure_component "${2:-}"; return $? ;;
+      --configure-component=*) _isc_configure_component "${1#*=}"; return $? ;;
       --detect)          _isc_detect_all; return 0 ;;
       --default)         mode="default" ;;
       --all)             mode="all" ;;
@@ -609,9 +678,13 @@ component_main() {
       if [[ -t 0 && -t 1 ]]; then
         local rc apply_rc=0 uninstall_rc=0
         # Run in-process (no command substitution) so the menu's selection
-        # arrays and the resolved apply/uninstall lists survive.
+        # arrays and the resolved apply/uninstall lists survive. Do NOT redirect
+        # stdout here: _isc_interactive_select renders the interactive submenu on
+        # stdout and only sets result globals (it echoes nothing), so a
+        # `>/dev/null` would send the whole menu to /dev/null — leaving the user
+        # staring at a blank screen while it silently waits for keypresses.
         ISC_SELECTED_APPLY=""; ISC_SELECTED_UNINSTALL=""
-        _isc_interactive_select >/dev/null; rc=$?
+        _isc_interactive_select; rc=$?
         if (( rc == 2 )); then
           isc_log_info "interactive menu unavailable — installing default components"
           msg "Interactive menu unavailable — installing default components."

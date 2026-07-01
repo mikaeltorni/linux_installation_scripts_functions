@@ -77,10 +77,10 @@ isc_component_lib_dir() {
 
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/installation_scripts/components"
   mkdir -p "$cache" 2>/dev/null || { isc_log_error "cannot create cache dir: $cache"; return 1; }
-  # component_logging.sh and installer_helpers.sh are downloaded opportunistically
+  # Logging, installer helpers, and repeatable_fields.py are downloaded opportunistically
   # (they are not part of the existence gate above) so older checkouts without
   # them still resolve.
-  for f in component_logging.sh installer_helpers.sh component_menu.sh component_runtime.sh; do
+  for f in component_logging.sh installer_helpers.sh repeatable_fields.py component_menu.sh component_runtime.sh; do
     if [[ ! -f "$cache/$f" || "${ISC_FUNCTIONS_REFRESH:-0}" == "1" ]]; then
       isc_log_debug "downloading $f from $ISC_FUNCTIONS_RAW"
       if command -v curl >/dev/null 2>&1; then
@@ -146,6 +146,17 @@ isc_load_helpers() {
   isc_log_info "loading installer helpers from $dir"
   # shellcheck source=/dev/null
   source "$dir/installer_helpers.sh"
+  # Also expose the shared interactive hotkey-capture helper when present, so
+  # every consuming installer can offer configurable hotkeys without vendoring
+  # the capture logic. Optional: older framework checkouts simply skip it.
+  if [[ -f "$dir/hotkey_capture.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$dir/hotkey_capture.sh"
+  fi
+  # Python configurators resolve this path through ISC_REPEATABLE_FIELDS_PY.
+  # It is optional for compatibility with older cached framework versions.
+  [[ -f "$dir/repeatable_fields.py" ]] && \
+    export ISC_REPEATABLE_FIELDS_PY="$dir/repeatable_fields.py"
 }
 
 # isc_load_menu - source only the TUI engine (component_menu.sh). The master
