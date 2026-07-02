@@ -67,6 +67,13 @@ class HotkeyBindingTests(unittest.TestCase):
         self.assertEqual(b.set_key("z"), "replaced")
         self.assertEqual(b.key, "z")
 
+    def test_repeat_key_press_toggles_off(self):
+        b = HotkeyBinding()
+        self.assertEqual(b.toggle_key("u"), "added")
+        self.assertEqual(b.toggle_key("u"), "removed")
+        self.assertIsNone(b.key)
+        self.assertEqual(b.display_key_field(), "(none)")
+
     def test_back_removes_most_recent_input(self):
         b = HotkeyBinding()
         b.add_modifier("Super")
@@ -209,6 +216,19 @@ class TtyParserTests(unittest.TestCase):
         self.assertEqual(actions[0].kind, "mod")
         self.assertEqual(actions[0].value, "Super")
 
+    def test_kitty_v2_modifier_press_with_event_type(self):
+        parser = TtyInputParser()
+        for seq in (b"\x1b[57421:1u", b"\x1b[57421;5:1u", b"\x1b[57417;2:1u"):
+            actions = parser.feed(seq)
+            self.assertEqual(len(actions), 1, seq)
+            self.assertEqual(actions[0].kind, "mod", seq)
+
+    def test_kitty_v2_modifier_release_is_ignored(self):
+        binding = HotkeyBinding()
+        for action in TtyInputParser().feed(b"\x1b[57421;5:3u"):
+            apply_tty_action(binding, action)
+        self.assertEqual(binding.modifiers, [])
+
     def test_ctrl_letter_byte(self):
         parser = TtyInputParser()
         actions = parser.feed(b"\x15")  # Ctrl+U
@@ -323,6 +343,36 @@ class TtyCaptureToggleTests(unittest.TestCase):
         self.assertTrue(
             transcript.rstrip().endswith("overlay modifiers='Ctrl' key='U'")
         )
+
+    def test_capture_kitty_v2_all_modifiers_left_right(self):
+        sequences = [
+            b"\x1b[57421;5:1u\x1b[57422;5:1u",
+            b"\x1b[57417;2:1u\x1b[57418;2:1u",
+            b"\x1b[57419;3:1u\x1b[57420;3:1u",
+            b"\x1b[57423;9:1u\x1b[57424;9:1u",
+        ]
+        for data in sequences:
+            chosen, transcript = _capture_with_transcript(data + b"\n")
+            self.assertIsNone(chosen, data)
+            self.assertIn("modifiers='(none)'", transcript, data)
+
+    def test_capture_stack_all_modifiers_via_v2_press(self):
+        data = (
+            b"\x1b[57421;5:1u"
+            b"\x1b[57419;3:1u"
+            b"\x1b[57417;2:1u"
+            b"\x1b[57423;9:1u"
+            b"\x1b[117u\n"
+        )
+        chosen, transcript = _capture_with_transcript(data)
+        self.assertEqual(chosen, "<Control><Alt><Super><Shift>u")
+        self.assertIn("modifiers='Ctrl+Alt+Super+Shift'", transcript)
+
+    def test_capture_key_repeat_press_clears_key_field(self):
+        chosen, transcript = _capture_with_transcript(b"\x1b[117u\x1b[117u\n")
+        self.assertIsNone(chosen)
+        self.assertIn("key='U'", transcript)
+        self.assertTrue(transcript.rstrip().endswith("key='(none)'"))
 
 
 class CaptureOverlayTests(unittest.TestCase):

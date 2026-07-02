@@ -263,6 +263,20 @@ class HotkeyBinding:
         self._events.append(("key", name))
         return "replaced" if had_key else "added"
 
+    def toggle_key(self, name: str) -> str:
+        """Toggle the single key off when the same key is pressed again.
+
+        Args:
+            name: The key spelling (a letter, named key, or mouse trigger token).
+
+        Returns:
+            ``"added"``, ``"replaced"``, or ``"removed"`` when toggled off.
+        """
+        if self.key == name:
+            self._events = [event for event in self._events if event[0] != "key"]
+            return "removed"
+        return self.set_key(name)
+
     def back(self) -> tuple[str, str] | None:
         """Remove and return the most recent press, or ``None`` when empty."""
         if not self._events:
@@ -560,6 +574,17 @@ class TtyAction:
     value: str | None = None
     # ``toggle`` for lone modifier presses (``mod`` actions only).
     mod_mode: str = "toggle"
+    # ``toggle`` for lone key presses; ``set`` for chord-reported keys.
+    key_mode: str = "toggle"
+    # Kitty event type: 1=press, 2=repeat, 3=release.
+    event_type: int = 1
+
+
+# Kitty progressive-enhancement flags pushed during TTY capture.
+_KITTY_KB_FLAG_DISAMBIGUATE = 1
+_KITTY_KB_FLAG_REPORT_ALL_KEYS = 8
+_KITTY_KEYBOARD_PUSH = b"\x1b[>9u"
+_KITTY_KEYBOARD_POP = b"\x1b[<1u"
 
 
 def kitty_modifier_bits(bits: int) -> list[str]:
@@ -602,27 +627,60 @@ def kitty_key_token(codepoint: int, modifier_bits: int = 0) -> tuple[str, str] |
     return None
 
 
+def _parse_kitty_u_params(params: str) -> tuple[int, int, int] | None:
+    """Parse Kitty ``CSI … u`` parameters into codepoint, modifier bits, event type."""
+    if not params:
+        return None
+    parts = params.split(";")
+    key_field = parts[0]
+    key_chunks = key_field.split(":")
+    try:
+        codepoint = int(key_chunks[0])
+    except ValueError:
+        return None
+    event_type = 1
+    if len(key_chunks) > 1 and key_chunks[1] in {"1", "2", "3"}:
+        event_type = int(key_chunks[1])
+    modifier_bits = 0
+    if len(parts) > 1 and parts[1]:
+        mod_field = parts[1]
+        mod_chunks = mod_field.split(":")
+        try:
+            modifier_bits = int(mod_chunks[0])
+        except ValueError:
+            return None
+        if len(mod_chunks) > 1 and mod_chunks[1] in {"1", "2", "3"}:
+            event_type = int(mod_chunks[1])
+    return codepoint, modifier_bits, event_type
+
+
 def parse_csi_sequence(params: str, final: str) -> list[TtyAction]:
     """Decode one completed CSI sequence into zero or more capture actions."""
     if final == "u":
-        parts = params.split(";")
-        try:
-            codepoint = int(parts[0])
-        except (IndexError, ValueError):
+        parsed = _parse_kitty_u_params(params)
+        if parsed is None:
             return []
-        modifier_bits = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+        codepoint, modifier_bits, event_type = parsed
+        if event_type == 3:
+            return []
         actions: list[TtyAction] = []
         token = kitty_key_token(codepoint, modifier_bits)
         if token is None:
             return actions
         kind, value = token
         if kind == "mod":
-            actions.append(TtyAction("mod", value, mod_mode="toggle"))
+            if event_type == 2:
+                return []
+            actions.append(
+                TtyAction("mod", value, mod_mode="toggle", event_type=event_type)
+            )
             return actions
+        key_mode = "toggle"
         if modifier_bits:
             mods = kitty_modifier_bits(modifier_bits)
             actions.append(TtyAction("sync_mods", ",".join(mods)))
-        actions.append(TtyAction("key", value))
+            key_mode = "set"
+        actions.append(TtyAction("key", value, key_mode=key_mode, event_type=event_type))
         return actions
     if final == "~" and params in {"3", "127"}:
         return [TtyAction("back")]
@@ -649,14 +707,14 @@ def parse_tty_byte(chunk: bytes) -> list[TtyAction]:
             letter = chr(ord("a") + byte - 1)
             return [
                 TtyAction("sync_mods", "Control"),
-                TtyAction("key", letter),
+                TtyAction("key", letter, key_mode="set"),
             ]
         if 32 <= byte <= 126:
             char = chr(byte)
             if char.isupper():
                 return [
                     TtyAction("sync_mods", "Shift"),
-                    TtyAction("key", char.lower()),
+                    TtyAction("key", char.lower(), key_mode="set"),
                 ]
             return [TtyAction("key", char.lower() if char.isalpha() else char)]
     return []
@@ -690,7 +748,11 @@ class TtyInputParser:
                     if 32 <= byte <= 126:
                         actions.append(TtyAction("sync_mods", "Alt"))
                         actions.append(
-                            TtyAction("key", chr(byte).lower() if chr(byte).isalpha() else chr(byte))
+                            TtyAction(
+                                "key",
+                                chr(byte).lower() if chr(byte).isalpha() else chr(byte),
+                                key_mode="set",
+                            )
                         )
                     continue
                 self._buffer += bytes((byte,))
@@ -728,7 +790,9 @@ class TtyInputParser:
             return parse_csi_sequence(params, final)
         if raw.startswith(b"\x1bO") and len(raw) == 3:
             letter = chr(raw[2])
-            return [TtyAction("key", letter.lower() if letter.isalpha() else letter)]
+            return [
+                TtyAction("key", letter.lower() if letter.isalpha() else letter)
+            ]
         return []
 
 
@@ -758,6 +822,8 @@ def apply_tty_action(
         binding.set_modifiers_from_chord(names)
         return None
     if action.kind == "mod":
+        if action.event_type in {2, 3}:
+            return None
         if modifier_only:
             binding.clear()
             binding.toggle_modifier(action.value or "")
@@ -768,9 +834,15 @@ def apply_tty_action(
     if action.kind == "key":
         if modifier_only:
             return None
+        if action.event_type in {2, 3}:
+            return None
         if single_key:
             binding.clear()
-        binding.set_key(action.value or "")
+        key_name = action.value or ""
+        if action.key_mode == "set":
+            binding.set_key(key_name)
+        else:
+            binding.toggle_key(key_name)
         return None
     return None
 
@@ -788,6 +860,22 @@ def raw_tty(stream: BinaryIO) -> Iterator[None]:
         yield
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+@contextlib.contextmanager
+def kitty_keyboard_protocol(out: TextIO) -> Iterator[None]:
+    """Enable Kitty keyboard protocol so lone modifier presses are reported."""
+    pushed = False
+    try:
+        if out.isatty():
+            out.write(_KITTY_KEYBOARD_PUSH.decode("ascii"))
+            out.flush()
+            pushed = True
+        yield
+    finally:
+        if pushed:
+            out.write(_KITTY_KEYBOARD_POP.decode("ascii"))
+            out.flush()
 
 
 _CAPTURE_OVERLAY_LINES = 3
@@ -941,7 +1029,7 @@ def capture_binding_tty(
 
     overlay.update(binding)
 
-    with raw_tty(stream):
+    with kitty_keyboard_protocol(out), raw_tty(stream):
         while True:
             chunk = _read_tty_byte(stream, parser)
             if not chunk:
@@ -1120,7 +1208,7 @@ def capture_binding(
                     elif kind == "mod":
                         binding.toggle_modifier(value)
                     else:
-                        binding.set_key(value)
+                        binding.toggle_key(value)
                     render()
                 if not active:
                     break
