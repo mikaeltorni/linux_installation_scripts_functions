@@ -73,7 +73,13 @@ isc_install_menu() { isc_deploy_file component_menu.sh; }
 
 # isc_install_runtime - Deploy the per-repository installer runtime (optional).
 #   Args: none. Returns: isc_deploy_file status.
-isc_install_runtime() { isc_deploy_file component_runtime.sh; }
+isc_install_runtime() {
+  local rc=0
+  isc_deploy_file component_runtime.sh      || rc=1
+  isc_deploy_file installation_config.sh    || rc=1
+  isc_deploy_file installation_config.py    || rc=1
+  return "$rc"
+}
 
 # isc_install_helpers - Deploy the shared install-time helpers plus the shared
 #   interactive hotkey-capture engine (hotkey_capture.sh + hotkey_capture.py),

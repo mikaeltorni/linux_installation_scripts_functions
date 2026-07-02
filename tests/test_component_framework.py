@@ -675,7 +675,7 @@ def test_interactive_submenu_is_not_redirected_to_devnull():
     """
     runtime = (REPO / "component_runtime.sh").read_text(encoding="utf-8")
     assert "_isc_interactive_select >/dev/null" not in runtime
-    assert "_isc_interactive_select; rc=$?" in runtime
+    assert 'cm_single_submenu "$repo"; rc=$?' in runtime
 
 
 def test_hotkey_capture_is_opt_in():

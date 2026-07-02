@@ -80,7 +80,7 @@ isc_component_lib_dir() {
   # Logging, installer helpers, and repeatable_fields.py are downloaded opportunistically
   # (they are not part of the existence gate above) so older checkouts without
   # them still resolve.
-  for f in component_logging.sh installer_helpers.sh repeatable_fields.py component_menu.sh component_runtime.sh; do
+  for f in component_logging.sh installer_helpers.sh repeatable_fields.py installation_config.py installation_config.sh component_menu.sh component_runtime.sh; do
     if [[ ! -f "$cache/$f" || "${ISC_FUNCTIONS_REFRESH:-0}" == "1" ]]; then
       isc_log_debug "downloading $f from $ISC_FUNCTIONS_RAW"
       if command -v curl >/dev/null 2>&1; then

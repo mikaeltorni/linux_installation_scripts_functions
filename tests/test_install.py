@@ -134,7 +134,8 @@ def test_installed_framework_matches_source():
         install_dir = Path(tmp) / "components"
         rc, _, err = run_install(["--all"], install_dir)
         assert rc == 0, err
-        for name in (*CORE_FILES, *OPTIONAL_FILES.values()):
+        deployed = (*CORE_FILES, *OPTIONAL_FILES.values(), "installation_config.sh", "installation_config.py")
+        for name in deployed:
             assert (install_dir / name).read_text() == (REPO / name).read_text(), name
 
 
