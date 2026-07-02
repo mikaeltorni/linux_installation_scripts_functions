@@ -317,6 +317,13 @@ class TtyCaptureToggleTests(unittest.TestCase):
         self.assertIn("modifiers='Super'", transcript)
         self.assertNotIn("modifiers='Ctrl+Super'", transcript)
 
+    def test_capture_ctrl_letter_clears_stale_toggled_modifiers(self):
+        chosen, transcript = _capture_with_transcript(b"\x1b[57421u\x1b[57423u\x15\n")
+        self.assertEqual(chosen, "<Control>u")
+        self.assertTrue(
+            transcript.rstrip().endswith("overlay modifiers='Ctrl' key='U'")
+        )
+
 
 class CaptureOverlayTests(unittest.TestCase):
     def test_overlay_shows_modifiers_and_key_fields(self):
