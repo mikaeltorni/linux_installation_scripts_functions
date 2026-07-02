@@ -7,7 +7,10 @@ here; every state-machine, conversion and conflict rule the goal specifies is.
 
 from __future__ import annotations
 
+import io
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -197,10 +200,8 @@ class TtyParserTests(unittest.TestCase):
         parser = TtyInputParser()
         actions = parser.feed(b"\x1b[117;8u")
         kinds = [(action.kind, action.value) for action in actions]
-        self.assertIn(("mod", "Super"), kinds)
+        self.assertIn(("sync_mods", "Super"), kinds)
         self.assertIn(("key", "u"), kinds)
-        super_action = next(action for action in actions if action.kind == "mod")
-        self.assertEqual(super_action.mod_mode, "ensure")
 
     def test_kitty_modifier_pressed_alone(self):
         parser = TtyInputParser()
@@ -211,8 +212,10 @@ class TtyParserTests(unittest.TestCase):
     def test_ctrl_letter_byte(self):
         parser = TtyInputParser()
         actions = parser.feed(b"\x15")  # Ctrl+U
-        self.assertEqual([(a.kind, a.value) for a in actions], [("mod", "Control"), ("key", "u")])
-        self.assertEqual(actions[0].mod_mode, "ensure")
+        self.assertEqual(
+            [(a.kind, a.value) for a in actions],
+            [("sync_mods", "Control"), ("key", "u")],
+        )
 
     def test_enter_confirms(self):
         parser = TtyInputParser()
@@ -248,11 +251,71 @@ class ModifierToggleTests(unittest.TestCase):
         self.assertEqual(binding.modifiers, [])
 
     def test_sequential_modifiers_then_key(self):
-        import io
-
         stream = io.BytesIO(b"\x1b[57421u\x1b[57417u\x1b[117u\n")
         chosen = capture_binding_tty("Workspace", "<Super>z", stream=stream)
         self.assertEqual(chosen, "<Control><Shift>u")
+
+    def test_chord_replaces_stale_toggled_modifiers(self):
+        binding = HotkeyBinding()
+        binding.toggle_modifier("Control")
+        for action in TtyInputParser().feed(b"\x1b[117;8u"):
+            apply_tty_action(binding, action)
+        self.assertEqual(binding.modifiers, ["Super"])
+        self.assertEqual(binding.key, "u")
+
+
+def _capture_with_transcript(data: bytes, **kwargs) -> tuple[str | None, str]:
+    """Run capture_binding_tty and return the GTK result plus transcript text."""
+    with tempfile.TemporaryDirectory() as directory:
+        transcript = Path(directory) / "capture.transcript"
+        os.environ["ISC_CAPTURE_TRANSCRIPT"] = str(transcript)
+        try:
+            chosen = capture_binding_tty(
+                "test",
+                "<Super>z",
+                stream=io.BytesIO(data),
+                **kwargs,
+            )
+        finally:
+            os.environ.pop("ISC_CAPTURE_TRANSCRIPT", None)
+        text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
+        return chosen, text
+
+
+class TtyCaptureToggleTests(unittest.TestCase):
+    def test_capture_left_right_control_toggle_off_via_tty(self):
+        chosen, transcript = _capture_with_transcript(b"\x1b[57421u\x1b[57422u\n")
+        self.assertIsNone(chosen)
+        self.assertIn("modifiers='Ctrl'", transcript)
+        self.assertIn("modifiers='(none)'", transcript)
+
+    def test_capture_left_right_control_retoggle_then_key(self):
+        chosen, transcript = _capture_with_transcript(
+            b"\x1b[57421u\x1b[57422u\x1b[57421u\x1b[117u\n"
+        )
+        self.assertEqual(chosen, "<Control>u")
+        self.assertIn("modifiers='(none)'", transcript)
+        self.assertIn("key='U'", transcript)
+
+    def test_capture_left_right_shift_toggle_via_tty(self):
+        chosen, transcript = _capture_with_transcript(b"\x1b[57417u\x1b[57418u\n")
+        self.assertIsNone(chosen)
+        self.assertIn("modifiers='Shift'", transcript)
+        self.assertIn("modifiers='(none)'", transcript)
+
+    def test_capture_left_right_alt_toggle_via_tty(self):
+        chosen, transcript = _capture_with_transcript(
+            b"\x1b[57419u\x1b[57420u\x1b[57419u\x1b[97u\n"
+        )
+        self.assertEqual(chosen, "<Alt>a")
+        self.assertIn("modifiers='(none)'", transcript)
+        self.assertIn("modifiers='Alt'", transcript)
+
+    def test_capture_chord_clears_prior_toggled_control(self):
+        chosen, transcript = _capture_with_transcript(b"\x1b[57421u\x1b[117;8u\n")
+        self.assertEqual(chosen, "<Super>u")
+        self.assertIn("modifiers='Super'", transcript)
+        self.assertNotIn("modifiers='Ctrl+Super'", transcript)
 
 
 class CaptureOverlayTests(unittest.TestCase):

@@ -231,6 +231,18 @@ class HotkeyBinding:
         self._events.append(("mod", name))
         return "added"
 
+    def set_modifiers_from_chord(self, names: list[str]) -> None:
+        """Replace toggled modifiers with those held during a simultaneous chord.
+
+        Stale modifiers tapped earlier are cleared so a chord report reflects
+        only the modifiers physically held with that key press.
+        """
+        held = {name for name in names if name in MODIFIER_ORDER}
+        self._events = [event for event in self._events if event[0] != "mod"]
+        for name in MODIFIER_ORDER:
+            if name in held:
+                self._events.append(("mod", name))
+
     def add_modifier(self, name: str) -> str:
         """Backward-compatible alias for :meth:`toggle_modifier`."""
         return self.toggle_modifier(name)
@@ -542,10 +554,9 @@ def _read_conflict_candidates(stream) -> list[tuple[str, str]]:
 class TtyAction:
     """One decoded terminal input action for the capture state machine."""
 
-    kind: str  # mod | key | confirm | cancel | back
+    kind: str  # mod | sync_mods | key | confirm | cancel | back
     value: str | None = None
-    # ``toggle`` for lone modifier presses; ``ensure`` when modifiers arrive
-    # bundled with a non-modifier key (Kitty CSI bits, Ctrl+letter, etc.).
+    # ``toggle`` for lone modifier presses (``mod`` actions only).
     mod_mode: str = "toggle"
 
 
@@ -606,8 +617,9 @@ def parse_csi_sequence(params: str, final: str) -> list[TtyAction]:
         if kind == "mod":
             actions.append(TtyAction("mod", value, mod_mode="toggle"))
             return actions
-        for modifier in kitty_modifier_bits(modifier_bits):
-            actions.append(TtyAction("mod", modifier, mod_mode="ensure"))
+        if modifier_bits:
+            mods = kitty_modifier_bits(modifier_bits)
+            actions.append(TtyAction("sync_mods", ",".join(mods)))
         actions.append(TtyAction("key", value))
         return actions
     if final == "~" and params in {"3", "127"}:
@@ -634,14 +646,14 @@ def parse_tty_byte(chunk: bytes) -> list[TtyAction]:
         if 1 <= byte <= 26:
             letter = chr(ord("a") + byte - 1)
             return [
-                TtyAction("mod", "Control", mod_mode="ensure"),
+                TtyAction("sync_mods", "Control"),
                 TtyAction("key", letter),
             ]
         if 32 <= byte <= 126:
             char = chr(byte)
             if char.isupper():
                 return [
-                    TtyAction("mod", "Shift", mod_mode="ensure"),
+                    TtyAction("sync_mods", "Shift"),
                     TtyAction("key", char.lower()),
                 ]
             return [TtyAction("key", char.lower() if char.isalpha() else char)]
@@ -674,7 +686,7 @@ class TtyInputParser:
                         continue
                     actions.extend(self._flush_escape(cancel=True))
                     if 32 <= byte <= 126:
-                        actions.append(TtyAction("mod", "Alt", mod_mode="ensure"))
+                        actions.append(TtyAction("sync_mods", "Alt"))
                         actions.append(
                             TtyAction("key", chr(byte).lower() if chr(byte).isalpha() else chr(byte))
                         )
@@ -738,14 +750,18 @@ def apply_tty_action(
     if action.kind == "back":
         binding.back()
         return "back"
+    if action.kind == "sync_mods":
+        raw = action.value or ""
+        names = [part for part in raw.split(",") if part]
+        binding.set_modifiers_from_chord(names)
+        return None
     if action.kind == "mod":
-        apply = binding.ensure_modifier if action.mod_mode == "ensure" else binding.toggle_modifier
         if modifier_only:
             binding.clear()
-            apply(action.value or "")
+            binding.toggle_modifier(action.value or "")
             return None
         if not single_key:
-            apply(action.value or "")
+            binding.toggle_modifier(action.value or "")
         return None
     if action.kind == "key":
         if modifier_only:
