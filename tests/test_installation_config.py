@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -265,8 +264,48 @@ def test_framework_default_fixture_is_populated():
     assert sum(1 for entry in default["components"].values() if entry.get("on")) >= 3
 
 
-def test_component_main_export_selection_empty():
-    """component_main --export-selection after empty.json apply reports no selections."""
+def test_bootstrap_manifest_skips_config_apply():
+    """manifest mode must leave CM_* unchanged even when default.json would disable all."""
+    fixture = REPO / "tests" / "fixtures" / "minimal_standalone_bootstrap.sh"
+    with tempfile.TemporaryDirectory() as directory:
+        cfg_dir = Path(directory) / "installation_configs"
+        cfg_dir.mkdir()
+        (cfg_dir / "default.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "scope": "standalone",
+                    "repo": "demo",
+                    "components": {"alpha": {"on": 0}, "beta": {"on": 0}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        harness = f"""
+set -uo pipefail
+export SCRIPT_DIR="{directory}"
+export ISC_CONFIG_REPO_ROOT="{directory}"
+export ISC_REPO_NAME=demo
+source "{fixture}"
+isc_bootstrap_selection manifest
+isc_config_export_json standalone demo /dev/stdout
+"""
+        result = subprocess.run(
+            ["bash", "-c", harness],
+            cwd=REPO,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        exported = json.loads(result.stdout)
+        assert exported["components"]["alpha"]["on"] == 1
+        assert exported["components"]["beta"]["on"] == 0
+
+
+def test_bootstrap_config_export_applies_named_config():
+    """config_export mode must apply empty.json and zero every component selection."""
+    fixture = REPO / "tests" / "fixtures" / "minimal_standalone_bootstrap.sh"
     with tempfile.TemporaryDirectory() as directory:
         cfg_dir = Path(directory) / "installation_configs"
         cfg_dir.mkdir()
@@ -283,20 +322,13 @@ def test_component_main_export_selection_empty():
         )
         harness = f"""
 set -uo pipefail
-source "{REPO}/component_menu.sh"
-source "{REPO}/component_runtime.sh"
-comp_a() {{ :; }}
-comp_b() {{ :; }}
-ISC_REPO_NAME="demo"
-ISC_REPO_LABEL="Demo"
-ISC_COMPONENTS=(
-  "alpha|Alpha|on|comp_a"
-  "beta|Beta|on|comp_b"
-)
 export SCRIPT_DIR="{directory}"
 export ISC_CONFIG_REPO_ROOT="{directory}"
-unset ISC_CONFIG_SKIP_APPLY ISC_CONFIG_SKIP_BASELINE ISC_RECEIPT_DIR
-component_main --config empty.json --export-selection
+export ISC_CONFIG_NAME=empty.json
+export ISC_REPO_NAME=demo
+source "{fixture}"
+isc_bootstrap_selection config_export
+isc_config_export_json standalone demo /dev/stdout
 """
         result = subprocess.run(
             ["bash", "-c", harness],
@@ -304,7 +336,6 @@ component_main --config empty.json --export-selection
             check=False,
             capture_output=True,
             text=True,
-            env={k: v for k, v in os.environ.items() if k not in ("ISC_CONFIG_SKIP_APPLY", "ISC_RECEIPT_DIR", "ISC_CONFIG_SKIP_BASELINE")},
         )
         assert result.returncode == 0, result.stderr or result.stdout
         exported = json.loads(result.stdout)
@@ -316,41 +347,32 @@ component_main --config empty.json --export-selection
         assert selected == []
 
 
-def test_component_main_export_without_config_skips_default_json_apply():
-    """Bare --export-selection must not apply default.json from installation_configs/."""
+def test_bootstrap_config_active_applies_default_json():
+    """config_active mode must apply default.json after loading baseline."""
+    fixture = REPO / "tests" / "fixtures" / "minimal_standalone_bootstrap.sh"
     with tempfile.TemporaryDirectory() as directory:
-        default_cfg = Path(directory) / "installation_configs" / "default.json"
-        default_cfg.parent.mkdir()
-        # A default.json that would disable alpha if mistakenly applied.
-        default_cfg.write_text(
+        cfg_dir = Path(directory) / "installation_configs"
+        cfg_dir.mkdir()
+        (cfg_dir / "default.json").write_text(
             json.dumps(
                 {
                     "schema_version": 1,
                     "scope": "standalone",
                     "repo": "demo",
-                    "components": {"alpha": {"on": 0}, "beta": {"on": 0}},
+                    "components": {"alpha": {"on": 0}, "beta": {"on": 1}},
                 }
             ),
             encoding="utf-8",
         )
         harness = f"""
 set -uo pipefail
-source "{REPO}/component_menu.sh"
-source "{REPO}/component_runtime.sh"
-comp_a() {{ :; }}
-comp_b() {{ :; }}
-ISC_REPO_NAME="demo"
-ISC_REPO_LABEL="Demo"
-ISC_COMPONENTS=(
-  "alpha|Alpha|on|comp_a"
-  "beta|Beta|off|comp_b"
-)
 export SCRIPT_DIR="{directory}"
 export ISC_CONFIG_REPO_ROOT="{directory}"
-export ISC_RECEIPT_DIR="{directory}/receipts"
-mkdir -p "$ISC_RECEIPT_DIR"
-unset ISC_CONFIG_SKIP_APPLY ISC_CONFIG_EXPLICIT ISC_CONFIG_NAME
-component_main --export-selection
+export ISC_CONFIG_NAME=default.json
+export ISC_REPO_NAME=demo
+source "{fixture}"
+isc_bootstrap_selection config_active
+printf "alpha=%s beta=%s" "${{CM_COMP_ON[demo|alpha]:-0}}" "${{CM_COMP_ON[demo|beta]:-0}}"
 """
         result = subprocess.run(
             ["bash", "-c", harness],
@@ -358,12 +380,9 @@ component_main --export-selection
             check=False,
             capture_output=True,
             text=True,
-            env={k: v for k, v in os.environ.items() if k not in ("ISC_CONFIG_SKIP_APPLY", "ISC_RECEIPT_DIR", "ISC_CONFIG_EXPLICIT")},
         )
         assert result.returncode == 0, result.stderr or result.stdout
-        exported = json.loads(result.stdout)
-        assert exported["components"]["alpha"]["on"] == 1
-        assert exported["components"]["beta"]["on"] == 0
+        assert "alpha=0 beta=1" in result.stdout
 
 
 if __name__ == "__main__":

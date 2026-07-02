@@ -48,14 +48,13 @@ write_default_standalone() {
   mkdir -p "$out_dir"
   local tmp
   tmp="$(mktemp)"
-  if ! env -u ISC_CONFIG_SKIP_APPLY -u ISC_RECEIPT_DIR -u ISC_CONFIG_NAME bash -c "
+  if ! env -u ISC_RECEIPT_DIR -u ISC_CONFIG_NAME bash -c "
     cd \"${repo_root}\"
     export SCRIPT_DIR=\"${repo_root}\"
     export ISC_CONFIG_REPO_ROOT=\"${repo_root}\"
     export TARGET_USER=\"${TARGET_USER:-$USER}\"
     export TARGET_HOME=\"${TARGET_HOME:-$HOME}\"
     export ISC_EXPORT_MANIFEST_DEFAULTS=1
-    export ISC_CONFIG_SKIP_APPLY=1
     export ISC_RECEIPT_DIR=\"/tmp/isc-gen-\$\$\"
     mkdir -p \"\$ISC_RECEIPT_DIR\"
     source \"${FRAMEWORK_DIR}/component_loader.sh\"
@@ -89,7 +88,7 @@ write_master_configs() {
 EOF
   local tmp
   tmp="$(mktemp)"
-  if ! env -u ISC_CONFIG_SKIP_APPLY -u ISC_RECEIPT_DIR -u ISC_CONFIG_NAME bash -c "
+  if ! env -u ISC_RECEIPT_DIR -u ISC_CONFIG_NAME bash -c "
     cd \"${master_root}\"
     export SCRIPT_DIR=\"${master_root}\"
     export ISC_CONFIG_REPO_ROOT=\"${master_root}\"

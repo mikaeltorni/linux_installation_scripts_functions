@@ -354,3 +354,40 @@ isc_config_apply_active() {
   fi
   isc_config_apply_json_file "$path"
 }
+
+# isc_bootstrap_selection - finalize CM_* after discovery/population.
+#
+# Call after CM_* arrays reflect manifest or installed state. Exactly three
+# modes keep config behavior explicit instead of combinatorial env-var guards:
+#
+#   manifest      - no config apply, no baseline (bare --export-selection,
+#                   --default, generator seeding with ISC_EXPORT_MANIFEST_DEFAULTS)
+#   config_active - load baseline from ISC_CONFIG_NAME, then apply it (non-TTY
+#                   runs and interactive runs before the save prompt)
+#   config_export   - apply ISC_CONFIG_NAME only, no baseline (--config with
+#                   --export-selection)
+#
+# Arguments:
+#   $1 - mode (manifest|config_active|config_export; default manifest)
+isc_bootstrap_selection() {
+  local mode="${1:-manifest}"
+  case "$mode" in
+    manifest)
+      isc_log_debug "bootstrap selection: manifest (no config apply)"
+      return 0
+      ;;
+    config_active)
+      isc_log_debug "bootstrap selection: config_active (baseline + apply ${ISC_CONFIG_NAME:-default.json})"
+      isc_config_load_baseline
+      isc_config_apply_active
+      ;;
+    config_export)
+      isc_log_debug "bootstrap selection: config_export (apply ${ISC_CONFIG_NAME:-default.json}, no baseline)"
+      isc_config_apply_active
+      ;;
+    *)
+      isc_log_warn "unknown bootstrap mode: $mode — treating as manifest"
+      return 0
+      ;;
+  esac
+}

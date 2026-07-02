@@ -556,14 +556,6 @@ _isc_prepare_selection_state() {
   done < <(_isc_all_ids)
   CM_COMP_IDS[$repo]="${ids% }"
   declare -F cm_reconcile_dependencies >/dev/null 2>&1 && cm_reconcile_dependencies "$repo"
-  if _isc_load_config_module; then
-    if [[ "${ISC_CONFIG_SKIP_APPLY:-0}" != "1" ]]; then
-      isc_config_apply_active
-    fi
-    if [[ "${ISC_CONFIG_SKIP_BASELINE:-0}" != "1" ]]; then
-      isc_config_load_baseline
-    fi
-  fi
 }
 
 # Resolve selected ids from CM_* after config/menu application.
@@ -766,17 +758,11 @@ component_main() {
       --configure-component=*) _isc_configure_component "${1#*=}"; return $? ;;
       --detect)          _isc_detect_all; return 0 ;;
       --export-selection)
-        local saved_skip_apply="${ISC_CONFIG_SKIP_APPLY:-0}" saved_skip_baseline="${ISC_CONFIG_SKIP_BASELINE:-0}"
-        # Export without --config reports discovery/manifest state only; apply a
-        # named config first only when --config was passed on the same invocation.
-        if [[ "${ISC_CONFIG_EXPLICIT:-0}" != "1" ]]; then
-          ISC_CONFIG_SKIP_APPLY=1
-        fi
-        ISC_CONFIG_SKIP_BASELINE=1
+        local bootstrap_mode="manifest"
+        [[ "${ISC_CONFIG_EXPLICIT:-0}" == "1" ]] && bootstrap_mode="config_export"
         _isc_prepare_selection_state
-        ISC_CONFIG_SKIP_APPLY="$saved_skip_apply"
-        ISC_CONFIG_SKIP_BASELINE="$saved_skip_baseline"
         if _isc_load_config_module; then
+          isc_bootstrap_selection "$bootstrap_mode"
           isc_config_export_json "standalone" "${ISC_REPO_NAME:-repo}" "/dev/stdout"
         fi
         return 0
@@ -818,6 +804,9 @@ component_main() {
       # No mode requested. Use the interactive submenu on a real terminal,
       # otherwise apply the active installation config (default.json when unset).
       _isc_prepare_selection_state
+      if _isc_load_config_module; then
+        isc_bootstrap_selection config_active
+      fi
       if [[ -t 0 && -t 1 ]]; then
         local rc apply_rc=0 uninstall_rc=0
         if ! _isc_load_menu; then
