@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -294,7 +295,7 @@ ISC_COMPONENTS=(
 )
 export SCRIPT_DIR="{directory}"
 export ISC_CONFIG_REPO_ROOT="{directory}"
-unset ISC_CONFIG_SKIP_APPLY
+unset ISC_CONFIG_SKIP_APPLY ISC_CONFIG_SKIP_BASELINE ISC_RECEIPT_DIR
 component_main --config empty.json --export-selection
 """
         result = subprocess.run(
@@ -303,8 +304,9 @@ component_main --config empty.json --export-selection
             check=False,
             capture_output=True,
             text=True,
+            env={k: v for k, v in os.environ.items() if k not in ("ISC_CONFIG_SKIP_APPLY", "ISC_RECEIPT_DIR", "ISC_CONFIG_SKIP_BASELINE")},
         )
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == 0, result.stderr or result.stdout
         exported = json.loads(result.stdout)
         selected = [
             cid
@@ -312,6 +314,56 @@ component_main --config empty.json --export-selection
             if entry.get("on")
         ]
         assert selected == []
+
+
+def test_component_main_export_without_config_skips_default_json_apply():
+    """Bare --export-selection must not apply default.json from installation_configs/."""
+    with tempfile.TemporaryDirectory() as directory:
+        default_cfg = Path(directory) / "installation_configs" / "default.json"
+        default_cfg.parent.mkdir()
+        # A default.json that would disable alpha if mistakenly applied.
+        default_cfg.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "scope": "standalone",
+                    "repo": "demo",
+                    "components": {"alpha": {"on": 0}, "beta": {"on": 0}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        harness = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+source "{REPO}/component_runtime.sh"
+comp_a() {{ :; }}
+comp_b() {{ :; }}
+ISC_REPO_NAME="demo"
+ISC_REPO_LABEL="Demo"
+ISC_COMPONENTS=(
+  "alpha|Alpha|on|comp_a"
+  "beta|Beta|off|comp_b"
+)
+export SCRIPT_DIR="{directory}"
+export ISC_CONFIG_REPO_ROOT="{directory}"
+export ISC_RECEIPT_DIR="{directory}/receipts"
+mkdir -p "$ISC_RECEIPT_DIR"
+unset ISC_CONFIG_SKIP_APPLY ISC_CONFIG_EXPLICIT ISC_CONFIG_NAME
+component_main --export-selection
+"""
+        result = subprocess.run(
+            ["bash", "-c", harness],
+            cwd=REPO,
+            check=False,
+            capture_output=True,
+            text=True,
+            env={k: v for k, v in os.environ.items() if k not in ("ISC_CONFIG_SKIP_APPLY", "ISC_RECEIPT_DIR", "ISC_CONFIG_EXPLICIT")},
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        exported = json.loads(result.stdout)
+        assert exported["components"]["alpha"]["on"] == 1
+        assert exported["components"]["beta"]["on"] == 0
 
 
 if __name__ == "__main__":

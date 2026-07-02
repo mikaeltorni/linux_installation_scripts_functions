@@ -556,9 +556,13 @@ _isc_prepare_selection_state() {
   done < <(_isc_all_ids)
   CM_COMP_IDS[$repo]="${ids% }"
   declare -F cm_reconcile_dependencies >/dev/null 2>&1 && cm_reconcile_dependencies "$repo"
-  if [[ "${ISC_CONFIG_SKIP_APPLY:-0}" != "1" ]] && _isc_load_config_module; then
-    isc_config_apply_active
-    isc_config_load_baseline
+  if _isc_load_config_module; then
+    if [[ "${ISC_CONFIG_SKIP_APPLY:-0}" != "1" ]]; then
+      isc_config_apply_active
+    fi
+    if [[ "${ISC_CONFIG_SKIP_BASELINE:-0}" != "1" ]]; then
+      isc_config_load_baseline
+    fi
   fi
 }
 
@@ -762,7 +766,16 @@ component_main() {
       --configure-component=*) _isc_configure_component "${1#*=}"; return $? ;;
       --detect)          _isc_detect_all; return 0 ;;
       --export-selection)
+        local saved_skip_apply="${ISC_CONFIG_SKIP_APPLY:-0}" saved_skip_baseline="${ISC_CONFIG_SKIP_BASELINE:-0}"
+        # Export without --config reports discovery/manifest state only; apply a
+        # named config first only when --config was passed on the same invocation.
+        if [[ "${ISC_CONFIG_EXPLICIT:-0}" != "1" ]]; then
+          ISC_CONFIG_SKIP_APPLY=1
+        fi
+        ISC_CONFIG_SKIP_BASELINE=1
         _isc_prepare_selection_state
+        ISC_CONFIG_SKIP_APPLY="$saved_skip_apply"
+        ISC_CONFIG_SKIP_BASELINE="$saved_skip_baseline"
         if _isc_load_config_module; then
           isc_config_export_json "standalone" "${ISC_REPO_NAME:-repo}" "/dev/stdout"
         fi
@@ -770,9 +783,15 @@ component_main() {
         ;;
       --config)
         ISC_CONFIG_NAME="${2:-default.json}"
+        ISC_CONFIG_EXPLICIT=1
+        export ISC_CONFIG_EXPLICIT ISC_CONFIG_NAME
         config_consumed=1
         ;;
-      --config=*) ISC_CONFIG_NAME="${1#*=}" ;;
+      --config=*)
+        ISC_CONFIG_NAME="${1#*=}"
+        ISC_CONFIG_EXPLICIT=1
+        export ISC_CONFIG_EXPLICIT ISC_CONFIG_NAME
+        ;;
       --default)         mode="default" ;;
       --all)             mode="all" ;;
       --select)          mode="select"; select_ids="${2:-}"; shift ;;
