@@ -25,6 +25,7 @@ KEYS = {
     "R": "r",
     "F": "f",
     "S": "s",
+    "P": "p",
     "RIGHT": "\x1b[C",
     **{str(number): str(number) for number in range(10)},
     "ENTER": "\n",
@@ -32,13 +33,15 @@ KEYS = {
 }
 
 
-def drive(keys: list[str]) -> dict[str, str]:
+def drive(keys: list[str], sticky_eligible: bool = True) -> dict[str, str]:
     """Run the submenu with two components (alpha installed, beta absent).
 
     Feeds `keys` and returns the resolved per-component state as a dict of
-    "<id>.on" / "<id>.uninstall" -> value.
+    "<id>.on" / "<id>.uninstall" -> value. `sticky_eligible` controls whether
+    the fixture components advertise [p] all-workspaces eligibility.
     """
     keystream = "".join(KEYS[k] for k in keys)
+    sticky_flag = "1" if sticky_eligible else "0"
     script = f"""
 set -uo pipefail
 source "{REPO}/component_menu.sh"
@@ -67,6 +70,10 @@ CM_COMP_WORKSPACE_ELIGIBLE[$repo|alpha]=1
 CM_COMP_WORKSPACE_ELIGIBLE[$repo|beta]=1
 CM_COMP_WORKSPACE[$repo|alpha]=0
 CM_COMP_WORKSPACE[$repo|beta]=4
+CM_COMP_STICKY_ELIGIBLE[$repo|alpha]={sticky_flag}
+CM_COMP_STICKY_ELIGIBLE[$repo|beta]={sticky_flag}
+CM_COMP_STICKY_ON[$repo|alpha]=0
+CM_COMP_STICKY_ON[$repo|beta]=0
 CM_COMP_CONFIGURE_ELIGIBLE[$repo|alpha]=1
 CM_COMP_CONFIGURE_ELIGIBLE[$repo|beta]=0
 CM_COMP_CONFIG_VALUE[$repo|alpha]='Super+W'
@@ -80,6 +87,7 @@ for id in alpha beta; do
   printf '%s.favorite=%s\\n' "$id" "${{CM_COMP_FAVORITE_ON[$repo|$id]:-}}"
   printf '%s.startup=%s\\n' "$id" "${{CM_COMP_STARTUP_ON[$repo|$id]:-}}"
   printf '%s.workspace=%s\\n' "$id" "${{CM_COMP_WORKSPACE[$repo|$id]:-}}"
+  printf '%s.sticky=%s\\n' "$id" "${{CM_COMP_STICKY_ON[$repo|$id]:-}}"
 done
 printf 'configured=%s\n' "$CONFIGURED"
 """
@@ -166,6 +174,71 @@ def test_number_assigns_workspace_without_changing_install_state():
 def test_zero_clears_workspace_assignment():
     state = drive(["DOWN", "0", "ENTER"])
     assert state["beta.workspace"] == "0"
+
+
+def test_p_toggles_all_workspaces_persistence():
+    """[p] marks an eligible app persistent on all workspaces without touching install state."""
+    state = drive(["P", "ENTER"])
+    assert state["alpha.sticky"] == "1"
+    assert state["alpha.on"] == "0"
+    assert state["alpha.uninstall"] == "0"
+
+
+def test_p_toggles_persistence_off():
+    """A second [p] clears the all-workspaces marker."""
+    state = drive(["P", "P", "ENTER"])
+    assert state["alpha.sticky"] == "0"
+
+
+def test_p_clears_single_workspace_assignment():
+    """[p] on a workspace-pinned app clears the [1-9] pin (mutually exclusive)."""
+    state = drive(["DOWN", "P", "ENTER"])
+    assert state["beta.sticky"] == "1"
+    assert state["beta.workspace"] == "0"
+
+
+def test_workspace_number_clears_persistence():
+    """Pinning to one workspace clears a previous all-workspaces selection."""
+    state = drive(["P", "3", "ENTER"])
+    assert state["alpha.workspace"] == "3"
+    assert state["alpha.sticky"] == "0"
+
+
+def test_u_clears_persistence_selection():
+    """[u] on an installed app clears the all-workspaces marker with the others."""
+    state = drive(["P", "U", "ENTER"])
+    assert state["alpha.uninstall"] == "1"
+    assert state["alpha.sticky"] == "0"
+
+
+def test_p_is_ignored_for_ineligible_component():
+    """[p] must be a no-op when the component exposes no desktop metadata."""
+    state = drive(["P", "ENTER"], sticky_eligible=False)
+    assert state["alpha.sticky"] == "0"
+
+
+def test_submenu_renders_persistent_marker():
+    """A sticky-selected app shows the [P] marker and the all-workspaces label."""
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_REPO_LABEL[$repo]=Demo
+CM_COMP_IDS[$repo]="alpha"
+CM_COMP_LABEL[$repo|alpha]=Alpha
+CM_COMP_ON[$repo|alpha]=1
+CM_COMP_STICKY_ON[$repo|alpha]=1
+out="$(cm_render_submenu "$repo" 0 "Configure components" "[p] all workspaces")"
+printf '%s' "$out"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=REPO, check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    assert "[P] Alpha" in plain
+    assert "(all workspaces)" in plain
 
 
 def test_right_opens_nested_component_configurator_and_selects_reconfigure():
