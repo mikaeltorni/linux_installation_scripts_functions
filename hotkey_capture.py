@@ -164,10 +164,10 @@ class HotkeyBinding:
     """Accumulate modifiers and a single key from discrete key presses.
 
     The binding records an *ordered* history of presses so that
-    :meth:`back` can undo exactly the most recent one. Modifiers are
-    de-duplicated (pressing Ctrl twice adds it once); only one non-modifier key
-    is ever held (pressing a second key replaces the first, honoring the "many
-    modifiers but only one key" rule).
+    :meth:`back` can undo exactly the most recent one. Modifier keys toggle on
+    repeat press (left and right physical keys map to the same canonical name);
+    only one non-modifier key is ever held (pressing a second key replaces the
+    first, honoring the "many modifiers but only one key" rule).
     """
 
     def __init__(self, mouse_mode: bool = False) -> None:
@@ -195,11 +195,31 @@ class HotkeyBinding:
         """Return True when a key has been captured (a bindable hotkey)."""
         return self.key is not None
 
-    def add_modifier(self, name: str) -> str:
-        """Add a modifier, ignoring duplicates.
+    def toggle_modifier(self, name: str) -> str:
+        """Toggle a modifier on or off when its physical key is pressed again.
 
         Args:
             name: A canonical modifier name (``Control``/``Alt``/``Super``/``Shift``).
+
+        Returns:
+            ``"added"`` when newly held, ``"removed"`` when toggled off.
+        """
+        if name not in MODIFIER_ORDER:
+            raise ValueError(f"unknown modifier {name!r}")
+        if any(kind == "mod" and held == name for kind, held in self._events):
+            for index in range(len(self._events) - 1, -1, -1):
+                kind, held = self._events[index]
+                if kind == "mod" and held == name:
+                    del self._events[index]
+                    return "removed"
+        self._events.append(("mod", name))
+        return "added"
+
+    def ensure_modifier(self, name: str) -> str:
+        """Add a modifier when bundled with a key chord without toggling off.
+
+        Args:
+            name: A canonical modifier name.
 
         Returns:
             ``"added"`` when newly recorded, ``"duplicate"`` when already held.
@@ -210,6 +230,10 @@ class HotkeyBinding:
             return "duplicate"
         self._events.append(("mod", name))
         return "added"
+
+    def add_modifier(self, name: str) -> str:
+        """Backward-compatible alias for :meth:`toggle_modifier`."""
+        return self.toggle_modifier(name)
 
     def set_key(self, name: str) -> str:
         """Set the single key, replacing any previous key.
@@ -235,6 +259,18 @@ class HotkeyBinding:
         """Discard all captured input."""
         self._events = []
 
+    def display_modifiers_field(self) -> str:
+        """Render active modifiers for the capture overlay (``Ctrl+Shift``)."""
+        parts = [MODIFIER_DISPLAY[name] for name in self.modifiers]
+        return "+".join(parts) if parts else "(none)"
+
+    def display_key_field(self) -> str:
+        """Render the captured non-modifier key for the capture overlay."""
+        if self.key is None:
+            return "(none)"
+        key = self.key
+        return key.upper() if len(key) == 1 else key
+
     def display(self) -> str:
         """Render the live ``Ctrl+Super+S`` style preview.
 
@@ -244,8 +280,7 @@ class HotkeyBinding:
         """
         parts = [MODIFIER_DISPLAY[name] for name in self.modifiers]
         if self.key is not None:
-            key = self.key
-            parts.append(key.upper() if len(key) == 1 else key)
+            parts.append(self.display_key_field())
         return "+".join(parts) if parts else "(none)"
 
     def to_accelerator(self) -> str:
@@ -509,6 +544,9 @@ class TtyAction:
 
     kind: str  # mod | key | confirm | cancel | back
     value: str | None = None
+    # ``toggle`` for lone modifier presses; ``ensure`` when modifiers arrive
+    # bundled with a non-modifier key (Kitty CSI bits, Ctrl+letter, etc.).
+    mod_mode: str = "toggle"
 
 
 def kitty_modifier_bits(bits: int) -> list[str]:
@@ -561,16 +599,16 @@ def parse_csi_sequence(params: str, final: str) -> list[TtyAction]:
             return []
         modifier_bits = int(parts[1]) if len(parts) > 1 and parts[1] else 0
         actions: list[TtyAction] = []
-        for modifier in kitty_modifier_bits(modifier_bits):
-            actions.append(TtyAction("mod", modifier))
         token = kitty_key_token(codepoint, modifier_bits)
         if token is None:
             return actions
         kind, value = token
         if kind == "mod":
-            actions.append(TtyAction("mod", value))
-        else:
-            actions.append(TtyAction("key", value))
+            actions.append(TtyAction("mod", value, mod_mode="toggle"))
+            return actions
+        for modifier in kitty_modifier_bits(modifier_bits):
+            actions.append(TtyAction("mod", modifier, mod_mode="ensure"))
+        actions.append(TtyAction("key", value))
         return actions
     if final == "~" and params in {"3", "127"}:
         return [TtyAction("back")]
@@ -595,11 +633,17 @@ def parse_tty_byte(chunk: bytes) -> list[TtyAction]:
             return []
         if 1 <= byte <= 26:
             letter = chr(ord("a") + byte - 1)
-            return [TtyAction("mod", "Control"), TtyAction("key", letter)]
+            return [
+                TtyAction("mod", "Control", mod_mode="ensure"),
+                TtyAction("key", letter),
+            ]
         if 32 <= byte <= 126:
             char = chr(byte)
             if char.isupper():
-                return [TtyAction("mod", "Shift"), TtyAction("key", char.lower())]
+                return [
+                    TtyAction("mod", "Shift", mod_mode="ensure"),
+                    TtyAction("key", char.lower()),
+                ]
             return [TtyAction("key", char.lower() if char.isalpha() else char)]
     return []
 
@@ -630,7 +674,7 @@ class TtyInputParser:
                         continue
                     actions.extend(self._flush_escape(cancel=True))
                     if 32 <= byte <= 126:
-                        actions.append(TtyAction("mod", "Alt"))
+                        actions.append(TtyAction("mod", "Alt", mod_mode="ensure"))
                         actions.append(
                             TtyAction("key", chr(byte).lower() if chr(byte).isalpha() else chr(byte))
                         )
@@ -695,12 +739,13 @@ def apply_tty_action(
         binding.back()
         return "back"
     if action.kind == "mod":
+        apply = binding.ensure_modifier if action.mod_mode == "ensure" else binding.toggle_modifier
         if modifier_only:
             binding.clear()
-            binding.add_modifier(action.value or "")
+            apply(action.value or "")
             return None
         if not single_key:
-            binding.add_modifier(action.value or "")
+            apply(action.value or "")
         return None
     if action.kind == "key":
         if modifier_only:
@@ -727,7 +772,7 @@ def raw_tty(stream: BinaryIO) -> Iterator[None]:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-_CAPTURE_OVERLAY_LINES = 2
+_CAPTURE_OVERLAY_LINES = 3
 _REBIND_BOX_LINES = 5
 
 
@@ -749,17 +794,30 @@ class CaptureOverlay:
         print("  └──────────────────────────────────────────────┘", file=self.out, flush=True)
         self.box_lines = _REBIND_BOX_LINES
 
-    def update(self, preview: str, hint: str | None = None) -> None:
-        """Draw or refresh the two-line capture overlay without scrolling."""
-        line1 = f"  Press modifiers and one key. Live: {preview}"
-        line2 = hint or "  Backspace = undo, Enter = confirm, Esc = keep current."
-        _transcript_line(f"overlay preview={preview!r}")
+    def update(self, binding: HotkeyBinding, hint: str | None = None) -> None:
+        """Draw or refresh the Modifiers / Key overlay without scrolling."""
+        line1 = f"  Modifiers: {binding.display_modifiers_field()}"
+        line2 = f"  Key: {binding.display_key_field()}"
+        line3 = hint or (
+            "  Press modifiers to toggle, then one key. "
+            "Backspace = undo, Enter = confirm, Esc = keep."
+        )
+        _transcript_line(
+            "overlay "
+            f"modifiers={binding.display_modifiers_field()!r} "
+            f"key={binding.display_key_field()!r}"
+        )
         if not self._overlay_drawn:
             print(line1, file=self.out, flush=True)
             print(line2, file=self.out, flush=True)
+            print(line3, file=self.out, flush=True)
             self._overlay_drawn = True
             return
-        print(f"\033[{_CAPTURE_OVERLAY_LINES}A\r\033[K{line1}\n\r\033[K{line2}", file=self.out, flush=True)
+        print(
+            f"\033[{_CAPTURE_OVERLAY_LINES}A\r\033[K{line1}\n\r\033[K{line2}\n\r\033[K{line3}",
+            file=self.out,
+            flush=True,
+        )
 
     def clear(self) -> None:
         """Mark the overlay finished; the menu caller redraws with ``cm_clear``."""
@@ -844,14 +902,14 @@ def capture_binding_tty(
                     modifiers = binding.modifiers
                     if not modifiers:
                         overlay.update(
-                            binding.display(),
+                            binding,
                             hint="  ! Press one modifier, then Enter to confirm.",
                         )
                         return False
                     return finish(modifiers[-1])
                 if not binding.is_complete():
                     overlay.update(
-                        binding.display(),
+                        binding,
                         hint="  ! Press one key, then Enter to confirm.",
                     )
                     return False
@@ -862,7 +920,7 @@ def capture_binding_tty(
                 redraw = True
         return redraw
 
-    overlay.update(binding.display())
+    overlay.update(binding)
 
     with raw_tty(stream):
         while True:
@@ -874,7 +932,7 @@ def capture_binding_tty(
                         if outcome is None or isinstance(outcome, str):
                             return outcome
                         if outcome is True:
-                            overlay.update(binding.display())
+                            overlay.update(binding)
                 if not stream.isatty():
                     return finish(None)
                 continue
@@ -883,7 +941,7 @@ def capture_binding_tty(
                 if outcome is None or isinstance(outcome, str):
                     return outcome
                 if outcome is True:
-                    overlay.update(binding.display())
+                    overlay.update(binding)
 
 
 # ---------------------------------------------------------------------------
@@ -1041,7 +1099,7 @@ def capture_binding(
                             binding.clear()
                             binding.set_key(value)
                     elif kind == "mod":
-                        binding.add_modifier(value)
+                        binding.toggle_modifier(value)
                     else:
                         binding.set_key(value)
                     render()

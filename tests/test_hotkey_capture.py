@@ -42,11 +42,21 @@ class HotkeyBindingTests(unittest.TestCase):
         # Canonical order is Control, Alt, Super, Shift.
         self.assertEqual(b.modifiers, ["Control", "Super", "Shift"])
 
-    def test_duplicate_modifier_ignored(self):
+    def test_repeat_modifier_press_toggles_off(self):
         b = HotkeyBinding()
-        self.assertEqual(b.add_modifier("Super"), "added")
-        self.assertEqual(b.add_modifier("Super"), "duplicate")
-        self.assertEqual(b.modifiers, ["Super"])
+        self.assertEqual(b.toggle_modifier("Super"), "added")
+        self.assertEqual(b.toggle_modifier("Super"), "removed")
+        self.assertEqual(b.modifiers, [])
+
+    def test_display_modifiers_and_key_fields(self):
+        b = HotkeyBinding()
+        self.assertEqual(b.display_modifiers_field(), "(none)")
+        self.assertEqual(b.display_key_field(), "(none)")
+        b.toggle_modifier("Control")
+        b.toggle_modifier("Shift")
+        b.set_key("u")
+        self.assertEqual(b.display_modifiers_field(), "Ctrl+Shift")
+        self.assertEqual(b.display_key_field(), "U")
 
     def test_only_one_key_replaces(self):
         b = HotkeyBinding()
@@ -189,6 +199,8 @@ class TtyParserTests(unittest.TestCase):
         kinds = [(action.kind, action.value) for action in actions]
         self.assertIn(("mod", "Super"), kinds)
         self.assertIn(("key", "u"), kinds)
+        super_action = next(action for action in actions if action.kind == "mod")
+        self.assertEqual(super_action.mod_mode, "ensure")
 
     def test_kitty_modifier_pressed_alone(self):
         parser = TtyInputParser()
@@ -200,6 +212,7 @@ class TtyParserTests(unittest.TestCase):
         parser = TtyInputParser()
         actions = parser.feed(b"\x15")  # Ctrl+U
         self.assertEqual([(a.kind, a.value) for a in actions], [("mod", "Control"), ("key", "u")])
+        self.assertEqual(actions[0].mod_mode, "ensure")
 
     def test_enter_confirms(self):
         parser = TtyInputParser()
@@ -214,19 +227,50 @@ class TtyParserTests(unittest.TestCase):
         self.assertEqual(kitty_modifier_bits(9), ["Super", "Shift"])
 
 
-class CaptureOverlayTests(unittest.TestCase):
-    def test_overlay_updates_in_place_without_stacking(self):
+class ModifierToggleTests(unittest.TestCase):
+    def test_left_then_right_control_toggles_off(self):
+        binding = HotkeyBinding()
+        parser = TtyInputParser()
+        for action in parser.feed(b"\x1b[57421u"):
+            apply_tty_action(binding, action)
+        self.assertEqual(binding.modifiers, ["Control"])
+        for action in parser.feed(b"\x1b[57422u"):
+            apply_tty_action(binding, action)
+        self.assertEqual(binding.modifiers, [])
+
+    def test_left_then_right_shift_recognized(self):
+        binding = HotkeyBinding()
+        parser = TtyInputParser()
+        for action in parser.feed(b"\x1b[57417u"):
+            apply_tty_action(binding, action)
+        for action in parser.feed(b"\x1b[57418u"):
+            apply_tty_action(binding, action)
+        self.assertEqual(binding.modifiers, [])
+
+    def test_sequential_modifiers_then_key(self):
         import io
 
+        stream = io.BytesIO(b"\x1b[57421u\x1b[57417u\x1b[117u\n")
+        chosen = capture_binding_tty("Workspace", "<Super>z", stream=stream)
+        self.assertEqual(chosen, "<Control><Shift>u")
+
+
+class CaptureOverlayTests(unittest.TestCase):
+    def test_overlay_shows_modifiers_and_key_fields(self):
+        import io
+
+        binding = HotkeyBinding()
+        binding.toggle_modifier("Super")
+        binding.set_key("u")
         stream = io.StringIO()
         overlay = CaptureOverlay(stream)
-        overlay.update("(none)")
-        overlay.update("Super")
-        overlay.update("Super+U")
+        overlay.update(binding)
+        binding.toggle_modifier("Shift")
+        overlay.update(binding)
         text = stream.getvalue()
-        self.assertGreaterEqual(text.count("\033[2A"), 2)
-        self.assertTrue(text.endswith("Esc = keep current.\n"))
-        self.assertIn("Live: Super+U", text)
+        self.assertIn("Modifiers: Super+Shift", text)
+        self.assertIn("Key: U", text)
+        self.assertGreaterEqual(text.count("\033[3A"), 1)
 
 
 class TtyCaptureTests(unittest.TestCase):

@@ -298,11 +298,59 @@ printf 'transcript=%s\\n' "$(cat "{transcript}" 2>/dev/null || true)"
         assert "value=Super+U" in stdout
         assert "107;9u" not in stderr
         assert "107;9u" not in stdout
-        assert "\033[2A" in stderr, "capture overlay should refresh in place, not stack new lines"
-        assert "Live: Super+U" in stderr
+        assert "Modifiers:" in stderr
+        assert "Key:" in stderr
+        assert "\033[3A" in stderr, "capture overlay should refresh in place, not stack new lines"
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
-        assert "preview='Super+U'" in transcript_text or "preview='Super'" in transcript_text
+        assert "modifiers='Super'" in transcript_text
+        assert "key='U'" in transcript_text
         assert "WORKSPACE_SWITCH_1=<Super>u" in config.read_text(encoding="utf-8")
+
+
+def test_right_inline_sequential_modifier_rebind():
+    """RIGHT rebind accepts modifiers pressed one at a time (Ctrl+Shift+U)."""
+    capture = b"\x1b[57421u\x1b[57417u\x1b[117u\n"
+    keystream = KEYS["RIGHT"].encode("latin-1") + capture + KEYS["ENTER"].encode("latin-1")
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "hotkeys.conf"
+        script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+source "{REPO}/hotkey_capture.sh"
+run_as_target() {{ "$@"; }}
+repo=demo
+CM_REPO_LABEL[$repo]=Demo
+CM_COMP_IDS[$repo]=ws1
+CM_COMP_LABEL[$repo|ws1]='Switch to workspace 1'
+CM_COMP_INSTALLED[$repo|ws1]=1
+CM_COMP_CONFIGURE_ELIGIBLE[$repo|ws1]=1
+CM_COMP_CONFIG_VALUE[$repo|ws1]='Super+Z'
+inline_configure() {{
+  value="$(isc_prompt_hotkey_field {config} WORKSPACE_SWITCH_1 'Switch to workspace 1' '<Super>z')"
+  [[ -n "$value" ]] && CM_COMP_CONFIG_VALUE[$repo|ws1]="$value"
+}}
+CM_CONFIGURE_CALLBACK=inline_configure
+cm_submenu_loop "$repo" standalone
+printf 'value=%s\\n' "${{CM_COMP_CONFIG_VALUE[$repo|ws1]:-}}"
+"""
+        result = subprocess.run(
+            ["bash", "-c", script],
+            cwd=REPO,
+            input=keystream,
+            text=False,
+            capture_output=True,
+            check=False,
+        )
+        stdout = result.stdout.decode(errors="replace")
+        stderr = result.stderr.decode(errors="replace")
+        assert result.returncode == 0, stderr
+        plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", stdout)
+        assert "Configure components" in plain
+        assert "[Ctrl+Shift+U]" in plain
+        assert "value=Ctrl+Shift+U" in stdout
+        assert "107;9u" not in stderr
+        assert "Modifiers:" in stderr
+        assert "WORKSPACE_SWITCH_1=<Control><Shift>u" in config.read_text(encoding="utf-8")
 
 
 def test_configurable_value_is_rendered_with_rebind_action():
