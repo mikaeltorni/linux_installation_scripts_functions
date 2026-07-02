@@ -2,12 +2,14 @@
 
 This is the single source of truth for the configurable-hotkey experience every
 setup repository consumes (it is not hard-coded to any one repo). A user picks a
-component to install and then *presses* the keys they want: each modifier press
-(Ctrl, Alt, Super, Shift) is accumulated as a modifier, a single non-modifier
-press becomes the key, duplicate presses are ignored, and the running selection
-is shown in ``Super+Shift+S`` form. The Backspace key removes the most recent
-input. When the binding is confirmed it is converted to the canonical GTK
-accelerator (``<Super><Shift>s``) that ``gsettings`` expects.
+component to install and then *presses* the keys they want: modifier keys (Ctrl,
+Alt, Super, Shift — including left and right physical keys) toggle on repeat
+press and may be pressed one at a time; a single non-modifier press becomes the
+key. Simultaneous chord reports replace held modifiers via
+:meth:`HotkeyBinding.set_modifiers_from_chord`. The capture overlay shows
+separate **Modifiers** and **Key** fields that update live. The Backspace key
+removes the most recent input. When the binding is confirmed it is converted to
+the canonical GTK accelerator (``<Super><Shift>s``) that ``gsettings`` expects.
 
 Two capture flavours are supported:
 
