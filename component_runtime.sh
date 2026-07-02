@@ -541,7 +541,11 @@ _isc_prepare_selection_state() {
     CM_COMP_WORKSPACE[$repo|$id]=0
     CM_COMP_STICKY_ELIGIBLE[$repo|$id]=0
     CM_COMP_STICKY_ON[$repo|$id]=0
-    if _isc_is_installed "$id"; then
+    if [[ "${ISC_EXPORT_MANIFEST_DEFAULTS:-0}" == "1" ]]; then
+      CM_COMP_INSTALLED[$repo|$id]=0
+      def="$(_isc_field "$id" 2)"
+      [[ "$def" == "on" ]] && CM_COMP_ON[$repo|$id]=1 || CM_COMP_ON[$repo|$id]=0
+    elif _isc_is_installed "$id"; then
       CM_COMP_INSTALLED[$repo|$id]=1
       CM_COMP_ON[$repo|$id]=0
     else

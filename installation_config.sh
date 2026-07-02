@@ -178,10 +178,19 @@ isc_config_export_json() {
   return $rc
 }
 
-# isc_config_finalize_apply - zero unspecified repos/components after JSON apply.
+# isc_config_is_explicit_empty - return 0 when the JSON document means "no selection".
+# Arguments: $1 json path.
+isc_config_is_explicit_empty() {
+  local json="$1"
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); scope=d.get("scope","standalone"); empty=(not (d.get("repos") or {}) if scope=="master" else not (d.get("components") or {})); sys.exit(0 if empty else 1)' "$json" 2>/dev/null
+}
+
+# isc_config_finalize_apply - zero unspecified repos/components after empty.json apply.
+# Populated configs (default.json, custom saves) leave unspecified entries unchanged.
 # Arguments: $1 json path.
 isc_config_finalize_apply() {
   local json="$1" repo id scope comps
+  isc_config_is_explicit_empty "$json" || return 0
   scope="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("scope","standalone"))' "$json" 2>/dev/null || echo standalone)"
   if [[ "$scope" == "master" ]]; then
     for repo in "${CM_REPOS[@]}"; do
