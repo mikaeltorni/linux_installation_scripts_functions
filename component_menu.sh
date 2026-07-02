@@ -529,17 +529,14 @@ cm_submenu_loop() {
         [[ "${CM_COMP_CONFIGURE_ELIGIBLE[$repo|$id]:-0}" == "1" ]] || continue
         [[ -n "${CM_CONFIGURE_CALLBACK:-}" ]] || continue
         declare -F "$CM_CONFIGURE_CALLBACK" >/dev/null 2>&1 || continue
-        cm_show_cursor
-        cm_clear
-        isc_log_info "opening nested configurator repo=$repo component=$id"
+        isc_log_info "opening inline configurator repo=$repo component=$id"
         if "$CM_CONFIGURE_CALLBACK" "$repo" "$id"; then
           CM_COMP_ON[$repo|$id]=1
           CM_COMP_UNINSTALL[$repo|$id]=0
-          isc_log_info "nested configurator accepted repo=$repo component=$id"
+          isc_log_info "inline configurator accepted repo=$repo component=$id"
         else
-          isc_log_warn "nested configurator cancelled or failed repo=$repo component=$id"
+          isc_log_warn "inline configurator cancelled or failed repo=$repo component=$id"
         fi
-        cm_hide_cursor
         ;;
       UNINSTALL)
         id="${ids[$sel]:-}"

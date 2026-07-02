@@ -248,6 +248,55 @@ def test_right_opens_nested_component_configurator_and_selects_reconfigure():
     assert state["alpha.on"] == "1"
 
 
+def test_right_inline_rebind_keeps_submenu_and_updates_value():
+    """RIGHT rebind stays on the Configure components screen and refreshes the row."""
+    capture_input = b"\x1b[117;8u\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "hotkeys.conf"
+        script = f"""
+set -uo pipefail
+source "{REPO}/component_menu.sh"
+source "{REPO}/hotkey_capture.sh"
+run_as_target() {{ "$@"; }}
+repo=demo
+CM_REPO_LABEL[$repo]=Demo
+CM_COMP_IDS[$repo]=ws1
+CM_COMP_LABEL[$repo|ws1]='Switch to workspace 1'
+CM_COMP_INSTALLED[$repo|ws1]=1
+CM_COMP_ON[$repo|ws1]=0
+CM_COMP_CONFIGURE_ELIGIBLE[$repo|ws1]=1
+CM_COMP_CONFIG_VALUE[$repo|ws1]='Super+Z'
+inline_configure() {{
+  local callback_repo="$1" callback_id="$2"
+  [[ "$callback_repo" == "$repo" && "$callback_id" == "ws1" ]] || return 2
+  value="$(isc_prompt_hotkey_field {config} WORKSPACE_SWITCH_1 'Switch to workspace 1' '<Super>z')"
+  [[ -n "$value" ]] && CM_COMP_CONFIG_VALUE[$repo|ws1]="$value"
+}}
+CM_CONFIGURE_CALLBACK=inline_configure
+before="$(cm_render_submenu "$repo" 0 'Configure components' '[→] rebind/details')"
+"$CM_CONFIGURE_CALLBACK" "$repo" ws1
+after="$(cm_render_submenu "$repo" 0 'Configure components' '[→] rebind/details')"
+printf '%s' "$before"
+printf '%s' '---AFTER---'
+printf '%s' "$after"
+"""
+        result = subprocess.run(
+            ["bash", "-c", script],
+            cwd=REPO,
+            input=capture_input,
+            text=False,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        combined = result.stdout.decode()
+        before, after = combined.split("---AFTER---", 1)
+        assert "Configure components" in before
+        assert "rebind" in before
+        assert "[Super+U]" in after
+        assert "WORKSPACE_SWITCH_1=<Super>u" in config.read_text(encoding="utf-8")
+
+
 def test_configurable_value_is_rendered_with_rebind_action():
     """Editable components show their current value and explicit rebind affordance."""
     script = f"""

@@ -15,12 +15,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hotkey_capture import (  # noqa: E402
     HotkeyBinding,
+    TtyInputParser,
     add_modifier_to_accelerator,
+    apply_tty_action,
+    capture_binding_tty,
     describe_conflicts,
     display_accelerator,
     find_conflicts,
+    kitty_modifier_bits,
     normalize_modifier,
     normalize_accelerator,
+    parse_csi_sequence,
     to_gnome_accelerator,
     token_for_evdev_key,
 )
@@ -174,6 +179,81 @@ class AcceleratorConversionTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             add_modifier_to_accelerator("<Super>w", "Super")
+
+
+class TtyParserTests(unittest.TestCase):
+    def test_kitty_super_plus_u_sequence(self):
+        parser = TtyInputParser()
+        actions = parser.feed(b"\x1b[117;8u")
+        kinds = [(action.kind, action.value) for action in actions]
+        self.assertIn(("mod", "Super"), kinds)
+        self.assertIn(("key", "u"), kinds)
+
+    def test_kitty_modifier_pressed_alone(self):
+        parser = TtyInputParser()
+        actions = parser.feed(b"\x1b[57423u")
+        self.assertEqual(actions[0].kind, "mod")
+        self.assertEqual(actions[0].value, "Super")
+
+    def test_ctrl_letter_byte(self):
+        parser = TtyInputParser()
+        actions = parser.feed(b"\x15")  # Ctrl+U
+        self.assertEqual([(a.kind, a.value) for a in actions], [("mod", "Control"), ("key", "u")])
+
+    def test_enter_confirms(self):
+        parser = TtyInputParser()
+        actions = parser.feed(b"\n")
+        self.assertEqual(actions[0].kind, "confirm")
+
+    def test_csi_delete_is_back(self):
+        actions = parse_csi_sequence("3", "~")
+        self.assertEqual(actions[0].kind, "back")
+
+    def test_kitty_modifier_bits(self):
+        self.assertEqual(kitty_modifier_bits(9), ["Super", "Shift"])
+
+
+class TtyCaptureTests(unittest.TestCase):
+    def test_capture_super_u_from_kitty_bytes(self):
+        import io
+
+        stream = io.BytesIO(b"\x1b[117;8u\n")
+        chosen = capture_binding_tty(
+            "Switch to workspace 1",
+            "<Super>z",
+            stream=stream,
+        )
+        self.assertEqual(chosen, "<Super>u")
+
+    def test_capture_modifier_only_super(self):
+        import io
+
+        stream = io.BytesIO(b"\x1b[57423u\n")
+        chosen = capture_binding_tty(
+            "Move modifier",
+            "Shift",
+            modifier_only=True,
+            stream=stream,
+        )
+        self.assertEqual(chosen, "Super")
+
+    def test_empty_enter_keeps_current(self):
+        import io
+
+        stream = io.BytesIO(b"\n")
+        chosen = capture_binding_tty("label", "<Super>z", stream=stream)
+        self.assertIsNone(chosen)
+
+    def test_backspace_undoes_last_press(self):
+        binding = HotkeyBinding()
+        parser = TtyInputParser()
+        for action in parser.feed(b"\x1b[117;8u"):
+            apply_tty_action(binding, action)
+        self.assertTrue(binding.is_complete())
+        for action in parser.feed(b"\x7f"):
+            apply_tty_action(binding, action)
+        self.assertFalse(binding.is_complete())
+        self.assertEqual(binding.modifiers, ["Super"])
 
 
 class ConflictTests(unittest.TestCase):

@@ -109,24 +109,26 @@ _isc_save_hotkey_field() {
 }
 
 # isc_prompt_hotkey_field CONFIG KEY LABEL DEFAULT [VALIDATOR] - render an
-# editable status box, accept many modifiers plus exactly one key, and persist
-# the canonical GTK accelerator. VALIDATOR, when supplied, receives the value.
+# inline rebind box, capture many modifiers plus exactly one key via press-to-
+# capture, and persist the canonical GTK accelerator. VALIDATOR, when supplied,
+# receives the value.
 isc_prompt_hotkey_field() {
   local config="$1" key="$2" label="$3" default_value="$4" validator="${5:-}"
-  local dir current display typed normalized
+  local dir current display captured normalized
   dir="$(isc_hotkey_lib_dir)" || return 1
   current="$(isc_hotkey_field_value "$config" "$key" "$default_value")"
   while true; do
     display="$(python3 "$dir/hotkey_capture.py" display "$current" 2>/dev/null || printf '%s' "$current")"
-    printf '\n  ┌─ Rebind hotkey ─────────────────────────────┐\n'
-    printf '  │ %-44s │\n' "$label"
-    printf '  │ Current: %-35s │\n' "$display"
-    printf '  └──────────────────────────────────────────────┘\n'
-    printf '  Type modifiers + one key (example: ctrl+super+w).\n' >&2
-    printf '  New value [Enter keeps %s]: ' "$display" >&2
-    IFS= read -r typed || return 1
-    [[ -z "$typed" ]] && return 0
-    if ! normalized="$(python3 "$dir/hotkey_capture.py" accel "$typed" 2>&1)"; then
+    printf '\n  ┌─ Rebind hotkey ─────────────────────────────┐\n' >&2
+    printf '  │ %-44s │\n' "$label" >&2
+    printf '  │ Current: %-35s │\n' "$display" >&2
+    printf '  └──────────────────────────────────────────────┘\n' >&2
+    captured="$(python3 "$dir/hotkey_capture.py" prompt-capture \
+      --label "$label" --current "$current")" || return 1
+    [[ -z "$captured" ]] && return 0
+    if [[ "$captured" == *"<"* ]]; then
+      normalized="$captured"
+    elif ! normalized="$(python3 "$dir/hotkey_capture.py" accel "$captured" 2>&1)"; then
       printf '  Invalid hotkey: %s\n' "${normalized#Invalid hotkey: }" >&2
       continue
     fi
@@ -139,24 +141,23 @@ isc_prompt_hotkey_field() {
   done
 }
 
-# isc_prompt_modifier_field CONFIG KEY LABEL DEFAULT [VALIDATOR] - typed field
-# for exactly one modifier (Shift/Ctrl/Alt/Super), persisted canonically.
+# isc_prompt_modifier_field CONFIG KEY LABEL DEFAULT [VALIDATOR] - press-to-
+# capture exactly one modifier (Shift/Ctrl/Alt/Super), persisted canonically.
 isc_prompt_modifier_field() {
   local config="$1" key="$2" label="$3" default_value="$4" validator="${5:-}"
-  local dir current display typed normalized
+  local dir current display captured normalized
   dir="$(isc_hotkey_lib_dir)" || return 1
   current="$(isc_hotkey_field_value "$config" "$key" "$default_value")"
   while true; do
     display="$(isc_modifier_field_status "$config" "$key" "$default_value" 2>/dev/null || printf '%s' "$current")"
-    printf '\n  ┌─ Rebind modifier ───────────────────────────┐\n'
-    printf '  │ %-44s │\n' "$label"
-    printf '  │ Current: %-35s │\n' "$display"
-    printf '  └──────────────────────────────────────────────┘\n'
-    printf '  Type one modifier: Shift, Ctrl, Alt, or Super.\n' >&2
-    printf '  New value [Enter keeps %s]: ' "$display" >&2
-    IFS= read -r typed || return 1
-    [[ -z "$typed" ]] && return 0
-    if ! normalized="$(python3 "$dir/hotkey_capture.py" modifier "$typed" 2>&1)"; then
+    printf '\n  ┌─ Rebind modifier ───────────────────────────┐\n' >&2
+    printf '  │ %-44s │\n' "$label" >&2
+    printf '  │ Current: %-35s │\n' "$display" >&2
+    printf '  └──────────────────────────────────────────────┘\n' >&2
+    captured="$(python3 "$dir/hotkey_capture.py" prompt-capture \
+      --label "$label" --current "$current" --modifier-only)" || return 1
+    [[ -z "$captured" ]] && return 0
+    if ! normalized="$(python3 "$dir/hotkey_capture.py" modifier "$captured" 2>&1)"; then
       printf '  Invalid modifier: %s\n' "${normalized#Invalid modifier: }" >&2
       continue
     fi

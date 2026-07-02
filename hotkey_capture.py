@@ -40,12 +40,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import re
 import sys
 import tempfile
+import termios
+import tty
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import BinaryIO, Iterable, Iterator
 
 from logging_utils import get_logger, log_call
 
@@ -133,6 +137,27 @@ EVDEV_CONFIRM_KEYS = {"KEY_ENTER", "KEY_KPENTER"}
 EVDEV_BACK_KEYS = {"KEY_BACKSPACE"}
 # evdev names that cancel capture and keep the default.
 EVDEV_CANCEL_KEYS = {"KEY_ESC"}
+
+# Kitty keyboard-protocol modifier key codes (pressed alone).
+KITTY_MODIFIER_KEY_CODES = {
+    57417: "Shift",
+    57418: "Shift",
+    57419: "Alt",
+    57420: "Alt",
+    57421: "Control",
+    57422: "Control",
+    57423: "Super",
+    57424: "Super",
+}
+
+# Kitty ``CSI … ; modifiers u`` bit flags (OR-combined).
+KITTY_MOD_SHIFT = 1
+KITTY_MOD_ALT = 2
+KITTY_MOD_CTRL = 4
+KITTY_MOD_SUPER = 8
+
+# CSI final-byte range for an escape sequence.
+_CSI_FINAL_BYTE = tuple(range(0x40, 0x80))
 
 
 class HotkeyBinding:
@@ -474,6 +499,330 @@ def _read_conflict_candidates(stream) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# TTY press-to-capture (used by component-menu rebind fields)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TtyAction:
+    """One decoded terminal input action for the capture state machine."""
+
+    kind: str  # mod | key | confirm | cancel | back
+    value: str | None = None
+
+
+def kitty_modifier_bits(bits: int) -> list[str]:
+    """Expand Kitty ``CSI u`` modifier bits into canonical modifier names."""
+    held: set[str] = set()
+    if bits & KITTY_MOD_SHIFT:
+        held.add("Shift")
+    if bits & KITTY_MOD_ALT:
+        held.add("Alt")
+    if bits & KITTY_MOD_CTRL:
+        held.add("Control")
+    if bits & KITTY_MOD_SUPER:
+        held.add("Super")
+    return [name for name in MODIFIER_ORDER if name in held]
+
+
+def kitty_key_token(codepoint: int, modifier_bits: int = 0) -> tuple[str, str] | None:
+    """Map a Kitty key code and held modifiers to a binding token.
+
+    Returns:
+        ``("mod", canonical)`` for a lone modifier press, ``("key", spelling)``
+        for a non-modifier key, or ``None`` when the code is not bindable.
+    """
+    if codepoint in KITTY_MODIFIER_KEY_CODES:
+        return ("mod", KITTY_MODIFIER_KEY_CODES[codepoint])
+    if 32 <= codepoint <= 126:
+        key = chr(codepoint)
+        if modifier_bits & KITTY_MOD_SHIFT and len(key) == 1 and key.isalpha():
+            key = key.lower()
+        return ("key", key.lower() if len(key) == 1 and key.isalpha() else key)
+    named = {
+        13: "Return",
+        27: "Escape",
+        9: "Tab",
+        32: "space",
+        127: "Delete",
+    }
+    if codepoint in named:
+        return ("key", named[codepoint])
+    return None
+
+
+def parse_csi_sequence(params: str, final: str) -> list[TtyAction]:
+    """Decode one completed CSI sequence into zero or more capture actions."""
+    if final == "u":
+        parts = params.split(";")
+        try:
+            codepoint = int(parts[0])
+        except (IndexError, ValueError):
+            return []
+        modifier_bits = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+        actions: list[TtyAction] = []
+        for modifier in kitty_modifier_bits(modifier_bits):
+            actions.append(TtyAction("mod", modifier))
+        token = kitty_key_token(codepoint, modifier_bits)
+        if token is None:
+            return actions
+        kind, value = token
+        if kind == "mod":
+            actions.append(TtyAction("mod", value))
+        else:
+            actions.append(TtyAction("key", value))
+        return actions
+    if final == "~" and params in {"3", "127"}:
+        return [TtyAction("back")]
+    return []
+
+
+def parse_tty_byte(chunk: bytes) -> list[TtyAction]:
+    """Decode a single raw byte or UTF-8 fragment into capture actions.
+
+    Handles Ctrl/Alt chords, Backspace, Enter, Esc, and Kitty ``CSI u`` reports.
+    Multi-byte sequences are accumulated by :class:`TtyInputParser`.
+    """
+    if not chunk:
+        return []
+    if chunk in {b"\r", b"\n"}:
+        return [TtyAction("confirm")]
+    if chunk in {b"\x7f", b"\x08"}:
+        return [TtyAction("back")]
+    if len(chunk) == 1:
+        byte = chunk[0]
+        if byte == 0x1B:
+            return []
+        if 1 <= byte <= 26:
+            letter = chr(ord("a") + byte - 1)
+            return [TtyAction("mod", "Control"), TtyAction("key", letter)]
+        if 32 <= byte <= 126:
+            char = chr(byte)
+            if char.isupper():
+                return [TtyAction("mod", "Shift"), TtyAction("key", char.lower())]
+            return [TtyAction("key", char.lower() if char.isalpha() else char)]
+    return []
+
+
+class TtyInputParser:
+    """Incremental parser that turns a raw TTY byte stream into :class:`TtyAction`s."""
+
+    def __init__(self) -> None:
+        self._buffer = b""
+        self._escaping = False
+
+    def feed(self, data: bytes) -> list[TtyAction]:
+        """Consume ``data`` and return any fully decoded actions."""
+        actions: list[TtyAction] = []
+        for byte in data:
+            if self._escaping:
+                if byte == 0x1B and self._buffer != b"\x1b":
+                    actions.extend(self._flush_escape(cancel=False))
+                    self._escaping = True
+                    self._buffer = b"\x1b"
+                    continue
+                if self._buffer == b"\x1b":
+                    if byte == ord("["):
+                        self._buffer = b"\x1b["
+                        continue
+                    if byte == ord("O"):
+                        self._buffer = b"\x1bO"
+                        continue
+                    actions.extend(self._flush_escape(cancel=True))
+                    if 32 <= byte <= 126:
+                        actions.append(TtyAction("mod", "Alt"))
+                        actions.append(
+                            TtyAction("key", chr(byte).lower() if chr(byte).isalpha() else chr(byte))
+                        )
+                    continue
+                self._buffer += bytes((byte,))
+                if self._buffer.startswith(b"\x1b[") and len(self._buffer) > 2:
+                    if byte in _CSI_FINAL_BYTE:
+                        actions.extend(self._flush_csi(final=chr(byte)))
+                    continue
+                if self._buffer.startswith(b"\x1bO") and len(self._buffer) == 3:
+                    actions.extend(self._flush_csi(final=chr(byte)))
+                    continue
+                continue
+
+            if byte == 0x1B:
+                self._escaping = True
+                self._buffer = b"\x1b"
+                continue
+
+            actions.extend(parse_tty_byte(bytes((byte,))))
+        return actions
+
+    def _flush_escape(self, *, cancel: bool) -> list[TtyAction]:
+        pending = self._buffer
+        self._buffer = b""
+        self._escaping = False
+        if cancel and pending == b"\x1b":
+            return [TtyAction("cancel")]
+        return []
+
+    def _flush_csi(self, *, final: str) -> list[TtyAction]:
+        raw = self._buffer
+        self._buffer = b""
+        self._escaping = False
+        if raw.startswith(b"\x1b["):
+            params = raw[2:-1].decode("ascii", errors="ignore")
+            return parse_csi_sequence(params, final)
+        if raw.startswith(b"\x1bO") and len(raw) == 3:
+            letter = chr(raw[2])
+            return [TtyAction("key", letter.lower() if letter.isalpha() else letter)]
+        return []
+
+
+def apply_tty_action(
+    binding: HotkeyBinding,
+    action: TtyAction,
+    *,
+    single_key: bool = False,
+    modifier_only: bool = False,
+) -> str | None:
+    """Apply one decoded action to ``binding``.
+
+    Returns:
+        ``"confirm"`` when Enter should finalize, ``"cancel"`` on Esc,
+        ``"back"`` after undo, or ``None`` for ordinary input.
+    """
+    if action.kind == "confirm":
+        return "confirm"
+    if action.kind == "cancel":
+        return "cancel"
+    if action.kind == "back":
+        binding.back()
+        return "back"
+    if action.kind == "mod":
+        if modifier_only:
+            binding.clear()
+            binding.add_modifier(action.value or "")
+            return None
+        if not single_key:
+            binding.add_modifier(action.value or "")
+        return None
+    if action.kind == "key":
+        if modifier_only:
+            return None
+        if single_key:
+            binding.clear()
+        binding.set_key(action.value or "")
+        return None
+    return None
+
+
+@contextlib.contextmanager
+def raw_tty(stream: BinaryIO) -> Iterator[None]:
+    """Put ``stream`` into raw mode for the duration of the context."""
+    if not stream.isatty():
+        yield
+        return
+    fd = stream.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        yield
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _read_tty_byte(stream: BinaryIO, parser: TtyInputParser) -> bytes:
+    """Read one byte, flushing a lone Esc when no follow-up arrives."""
+    from select import select
+
+    if not stream.isatty():
+        return stream.read(1)
+    if parser._escaping and parser._buffer == b"\x1b":
+        ready, _, _ = select([stream], [], [], 0.05)
+        if not ready:
+            return b""
+    return stream.read(1)
+
+
+def capture_binding_tty(
+    label: str,
+    current: str,
+    *,
+    single_key: bool = False,
+    modifier_only: bool = False,
+    stream: BinaryIO | None = None,
+    out=sys.stderr,
+) -> str | None:
+    """Capture one hotkey from raw terminal key presses.
+
+    Modifiers accumulate one-by-one; exactly one non-modifier key completes the
+    chord (except ``modifier_only``, which accepts one modifier). Returns the
+    GTK accelerator (or canonical modifier name) on confirm, ``None`` when the
+    user keeps the current value, and re-prompts when the binding is incomplete.
+    """
+    stream = stream or sys.stdin.buffer
+    binding = HotkeyBinding()
+    parser = TtyInputParser()
+
+    def render_prompt() -> None:
+        preview = binding.display()
+        print(
+            f"  Press modifiers and one key. Live: {preview}",
+            file=out,
+            flush=True,
+        )
+        print(
+            "  Backspace = undo last, Enter = confirm, Esc = keep current.",
+            file=out,
+            flush=True,
+        )
+
+    def handle_actions(actions: list[TtyAction]) -> str | None | bool:
+        for action in actions:
+            result = apply_tty_action(
+                binding,
+                action,
+                single_key=single_key,
+                modifier_only=modifier_only,
+            )
+            if result == "cancel":
+                return None
+            if result == "confirm":
+                if binding.is_empty():
+                    return None
+                if modifier_only:
+                    modifiers = binding.modifiers
+                    if not modifiers:
+                        return False
+                    return modifiers[-1]
+                if not binding.is_complete():
+                    return False
+                return binding.to_accelerator()
+        return False
+
+    render_prompt()
+
+    with raw_tty(stream):
+        while True:
+            chunk = _read_tty_byte(stream, parser)
+            if not chunk:
+                if parser._escaping and parser._buffer == b"\x1b":
+                    for action in parser._flush_escape(cancel=True):
+                        outcome = handle_actions([action])
+                        if outcome is None:
+                            return None
+                        if isinstance(outcome, str):
+                            return outcome
+                if not stream.isatty():
+                    return None
+                continue
+            for action in parser.feed(chunk):
+                outcome = handle_actions([action])
+                if outcome is None:
+                    return None
+                if isinstance(outcome, str):
+                    return outcome
+                if outcome is False:
+                    render_prompt()
+
+
+# ---------------------------------------------------------------------------
 # evdev capture driver (best effort; not exercised by unit tests)
 # ---------------------------------------------------------------------------
 
@@ -696,6 +1045,15 @@ def main(argv: list[str] | None = None) -> int:
     cap.add_argument("--single-key", action="store_true")
     cap.add_argument("--mouse", action="store_true")
 
+    prompt = sub.add_parser(
+        "prompt-capture",
+        help="Press-to-capture one field value for component-menu rebind",
+    )
+    prompt.add_argument("--label", required=True)
+    prompt.add_argument("--current", required=True)
+    prompt.add_argument("--single-key", action="store_true")
+    prompt.add_argument("--modifier-only", action="store_true")
+
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     if args.command == "accel":
@@ -756,6 +1114,17 @@ def main(argv: list[str] | None = None) -> int:
         if chosen is None:
             chosen = args.default
         print(chosen)
+        return 0
+
+    if args.command == "prompt-capture":
+        chosen = capture_binding_tty(
+            args.label,
+            args.current,
+            single_key=args.single_key,
+            modifier_only=args.modifier_only,
+        )
+        if chosen is not None:
+            print(chosen)
         return 0
 
     return 2
