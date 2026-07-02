@@ -118,13 +118,8 @@ isc_prompt_hotkey_field() {
   dir="$(isc_hotkey_lib_dir)" || return 1
   current="$(isc_hotkey_field_value "$config" "$key" "$default_value")"
   while true; do
-    display="$(python3 "$dir/hotkey_capture.py" display "$current" 2>/dev/null || printf '%s' "$current")"
-    printf '\n  ┌─ Rebind hotkey ─────────────────────────────┐\n' >&2
-    printf '  │ %-44s │\n' "$label" >&2
-    printf '  │ Current: %-35s │\n' "$display" >&2
-    printf '  └──────────────────────────────────────────────┘\n' >&2
     captured="$(python3 "$dir/hotkey_capture.py" prompt-capture \
-      --label "$label" --current "$current")" || return 1
+      --label "$label" --current "$current" --show-box)" || return 1
     [[ -z "$captured" ]] && return 0
     if [[ "$captured" == *"<"* ]]; then
       normalized="$captured"
@@ -149,13 +144,8 @@ isc_prompt_modifier_field() {
   dir="$(isc_hotkey_lib_dir)" || return 1
   current="$(isc_hotkey_field_value "$config" "$key" "$default_value")"
   while true; do
-    display="$(isc_modifier_field_status "$config" "$key" "$default_value" 2>/dev/null || printf '%s' "$current")"
-    printf '\n  ┌─ Rebind modifier ───────────────────────────┐\n' >&2
-    printf '  │ %-44s │\n' "$label" >&2
-    printf '  │ Current: %-35s │\n' "$display" >&2
-    printf '  └──────────────────────────────────────────────┘\n' >&2
     captured="$(python3 "$dir/hotkey_capture.py" prompt-capture \
-      --label "$label" --current "$current" --modifier-only)" || return 1
+      --label "$label" --current "$current" --modifier-only --show-box)" || return 1
     [[ -z "$captured" ]] && return 0
     if ! normalized="$(python3 "$dir/hotkey_capture.py" modifier "$captured" 2>&1)"; then
       printf '  Invalid modifier: %s\n' "${normalized#Invalid modifier: }" >&2

@@ -249,12 +249,15 @@ def test_right_opens_nested_component_configurator_and_selects_reconfigure():
 
 
 def test_right_inline_rebind_keeps_submenu_and_updates_value():
-    """RIGHT rebind stays on the Configure components screen and refreshes the row."""
-    capture_input = b"\x1b[117;8u\n"
+    """RIGHT in cm_submenu_loop captures Super+U without escape garbage or stacked UI."""
+    super_u_enter = b"\x1b[117;8u\n"
+    keystream = KEYS["RIGHT"].encode("latin-1") + super_u_enter + KEYS["ENTER"].encode("latin-1")
     with tempfile.TemporaryDirectory() as tmp:
         config = Path(tmp) / "hotkeys.conf"
+        transcript = Path(tmp) / "capture.transcript"
         script = f"""
 set -uo pipefail
+export ISC_CAPTURE_TRANSCRIPT="{transcript}"
 source "{REPO}/component_menu.sh"
 source "{REPO}/hotkey_capture.sh"
 run_as_target() {{ "$@"; }}
@@ -273,27 +276,32 @@ inline_configure() {{
   [[ -n "$value" ]] && CM_COMP_CONFIG_VALUE[$repo|ws1]="$value"
 }}
 CM_CONFIGURE_CALLBACK=inline_configure
-before="$(cm_render_submenu "$repo" 0 'Configure components' '[→] rebind/details')"
-"$CM_CONFIGURE_CALLBACK" "$repo" ws1
-after="$(cm_render_submenu "$repo" 0 'Configure components' '[→] rebind/details')"
-printf '%s' "$before"
-printf '%s' '---AFTER---'
-printf '%s' "$after"
+cm_submenu_loop "$repo" standalone
+printf 'value=%s\\n' "${{CM_COMP_CONFIG_VALUE[$repo|ws1]:-}}"
+printf 'transcript=%s\\n' "$(cat "{transcript}" 2>/dev/null || true)"
 """
         result = subprocess.run(
             ["bash", "-c", script],
             cwd=REPO,
-            input=capture_input,
+            input=keystream,
             text=False,
             capture_output=True,
             check=False,
         )
-        assert result.returncode == 0, result.stderr.decode()
-        combined = result.stdout.decode()
-        before, after = combined.split("---AFTER---", 1)
-        assert "Configure components" in before
-        assert "rebind" in before
-        assert "[Super+U]" in after
+        stdout = result.stdout.decode(errors="replace")
+        stderr = result.stderr.decode(errors="replace")
+        assert result.returncode == 0, stderr
+        plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", stdout)
+        assert "Configure components" in plain
+        assert "rebind" in plain.lower()
+        assert "[Super+U]" in plain
+        assert "value=Super+U" in stdout
+        assert "107;9u" not in stderr
+        assert "107;9u" not in stdout
+        assert "\033[2A" in stderr, "capture overlay should refresh in place, not stack new lines"
+        assert "Live: Super+U" in stderr
+        transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
+        assert "preview='Super+U'" in transcript_text or "preview='Super'" in transcript_text
         assert "WORKSPACE_SWITCH_1=<Super>u" in config.read_text(encoding="utf-8")
 
 

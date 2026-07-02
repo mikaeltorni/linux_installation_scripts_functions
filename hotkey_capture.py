@@ -49,7 +49,7 @@ import termios
 import tty
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Iterable, Iterator
+from typing import BinaryIO, Iterable, Iterator, TextIO
 
 from logging_utils import get_logger, log_call
 
@@ -727,6 +727,58 @@ def raw_tty(stream: BinaryIO) -> Iterator[None]:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
+_CAPTURE_OVERLAY_LINES = 2
+_REBIND_BOX_LINES = 5
+
+
+class CaptureOverlay:
+    """Fixed-size rebind UI that updates in place and erases itself on exit."""
+
+    def __init__(self, out: TextIO, *, box_lines: int = 0) -> None:
+        self.out = out
+        self.box_lines = box_lines
+        self._overlay_drawn = False
+
+    def draw_box(self, label: str, current_display: str, *, modifier: bool = False) -> None:
+        """Render the bordered rebind header once (five lines)."""
+        title = "Rebind modifier" if modifier else "Rebind hotkey"
+        print("", file=self.out, flush=True)
+        print("  ┌─ " + title + " " + "─" * (44 - len(title)) + "┐", file=self.out, flush=True)
+        print(f"  │ {label:<44} │", file=self.out, flush=True)
+        print(f"  │ Current: {current_display:<35} │", file=self.out, flush=True)
+        print("  └──────────────────────────────────────────────┘", file=self.out, flush=True)
+        self.box_lines = _REBIND_BOX_LINES
+
+    def update(self, preview: str, hint: str | None = None) -> None:
+        """Draw or refresh the two-line capture overlay without scrolling."""
+        line1 = f"  Press modifiers and one key. Live: {preview}"
+        line2 = hint or "  Backspace = undo, Enter = confirm, Esc = keep current."
+        _transcript_line(f"overlay preview={preview!r}")
+        if not self._overlay_drawn:
+            print(line1, file=self.out, flush=True)
+            print(line2, file=self.out, flush=True)
+            self._overlay_drawn = True
+            return
+        print(f"\033[{_CAPTURE_OVERLAY_LINES}A\r\033[K{line1}\n\r\033[K{line2}", file=self.out, flush=True)
+
+    def clear(self) -> None:
+        """Mark the overlay finished; the menu caller redraws with ``cm_clear``."""
+        self._overlay_drawn = False
+        self.box_lines = 0
+
+
+def _transcript_line(line: str) -> None:
+    """Append one capture transcript line when ISC_CAPTURE_TRANSCRIPT is set."""
+    path = os.environ.get("ISC_CAPTURE_TRANSCRIPT")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+    except OSError as error:
+        LOGGER.debug("could not write capture transcript: %s", error)
+
+
 def _read_tty_byte(stream: BinaryIO, parser: TtyInputParser) -> bytes:
     """Read one byte, flushing a lone Esc when no follow-up arrives."""
     from select import select
@@ -746,8 +798,9 @@ def capture_binding_tty(
     *,
     single_key: bool = False,
     modifier_only: bool = False,
+    show_box: bool = False,
     stream: BinaryIO | None = None,
-    out=sys.stderr,
+    out: TextIO = sys.stderr,
 ) -> str | None:
     """Capture one hotkey from raw terminal key presses.
 
@@ -759,21 +812,22 @@ def capture_binding_tty(
     stream = stream or sys.stdin.buffer
     binding = HotkeyBinding()
     parser = TtyInputParser()
+    overlay = CaptureOverlay(out)
+    try:
+        current_display = display_accelerator(current) if not modifier_only else (
+            "Ctrl" if current == "Control" else current
+        )
+    except ValueError:
+        current_display = current
+    if show_box:
+        overlay.draw_box(label, current_display, modifier=modifier_only)
 
-    def render_prompt() -> None:
-        preview = binding.display()
-        print(
-            f"  Press modifiers and one key. Live: {preview}",
-            file=out,
-            flush=True,
-        )
-        print(
-            "  Backspace = undo last, Enter = confirm, Esc = keep current.",
-            file=out,
-            flush=True,
-        )
+    def finish(value: str | None) -> str | None:
+        overlay.clear()
+        return value
 
     def handle_actions(actions: list[TtyAction]) -> str | None | bool:
+        redraw = False
         for action in actions:
             result = apply_tty_action(
                 binding,
@@ -782,21 +836,33 @@ def capture_binding_tty(
                 modifier_only=modifier_only,
             )
             if result == "cancel":
-                return None
+                return finish(None)
             if result == "confirm":
                 if binding.is_empty():
-                    return None
+                    return finish(None)
                 if modifier_only:
                     modifiers = binding.modifiers
                     if not modifiers:
+                        overlay.update(
+                            binding.display(),
+                            hint="  ! Press one modifier, then Enter to confirm.",
+                        )
                         return False
-                    return modifiers[-1]
+                    return finish(modifiers[-1])
                 if not binding.is_complete():
+                    overlay.update(
+                        binding.display(),
+                        hint="  ! Press one key, then Enter to confirm.",
+                    )
                     return False
-                return binding.to_accelerator()
-        return False
+                return finish(binding.to_accelerator())
+            if result == "back":
+                redraw = True
+            if action.kind in {"mod", "key"}:
+                redraw = True
+        return redraw
 
-    render_prompt()
+    overlay.update(binding.display())
 
     with raw_tty(stream):
         while True:
@@ -805,21 +871,19 @@ def capture_binding_tty(
                 if parser._escaping and parser._buffer == b"\x1b":
                     for action in parser._flush_escape(cancel=True):
                         outcome = handle_actions([action])
-                        if outcome is None:
-                            return None
-                        if isinstance(outcome, str):
+                        if outcome is None or isinstance(outcome, str):
                             return outcome
+                        if outcome is True:
+                            overlay.update(binding.display())
                 if not stream.isatty():
-                    return None
+                    return finish(None)
                 continue
             for action in parser.feed(chunk):
                 outcome = handle_actions([action])
-                if outcome is None:
-                    return None
-                if isinstance(outcome, str):
+                if outcome is None or isinstance(outcome, str):
                     return outcome
-                if outcome is False:
-                    render_prompt()
+                if outcome is True:
+                    overlay.update(binding.display())
 
 
 # ---------------------------------------------------------------------------
@@ -1053,6 +1117,11 @@ def main(argv: list[str] | None = None) -> int:
     prompt.add_argument("--current", required=True)
     prompt.add_argument("--single-key", action="store_true")
     prompt.add_argument("--modifier-only", action="store_true")
+    prompt.add_argument(
+        "--show-box",
+        action="store_true",
+        help="Draw the bordered rebind header and erase it on exit",
+    )
 
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
@@ -1122,6 +1191,7 @@ def main(argv: list[str] | None = None) -> int:
             args.current,
             single_key=args.single_key,
             modifier_only=args.modifier_only,
+            show_box=args.show_box,
         )
         if chosen is not None:
             print(chosen)

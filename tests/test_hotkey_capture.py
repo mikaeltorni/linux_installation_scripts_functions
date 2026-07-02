@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hotkey_capture import (  # noqa: E402
+    CaptureOverlay,
     HotkeyBinding,
     TtyInputParser,
     add_modifier_to_accelerator,
@@ -211,6 +212,21 @@ class TtyParserTests(unittest.TestCase):
 
     def test_kitty_modifier_bits(self):
         self.assertEqual(kitty_modifier_bits(9), ["Super", "Shift"])
+
+
+class CaptureOverlayTests(unittest.TestCase):
+    def test_overlay_updates_in_place_without_stacking(self):
+        import io
+
+        stream = io.StringIO()
+        overlay = CaptureOverlay(stream)
+        overlay.update("(none)")
+        overlay.update("Super")
+        overlay.update("Super+U")
+        text = stream.getvalue()
+        self.assertGreaterEqual(text.count("\033[2A"), 2)
+        self.assertTrue(text.endswith("Esc = keep current.\n"))
+        self.assertIn("Live: Super+U", text)
 
 
 class TtyCaptureTests(unittest.TestCase):

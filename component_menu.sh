@@ -537,6 +537,8 @@ cm_submenu_loop() {
         else
           isc_log_warn "inline configurator cancelled or failed repo=$repo component=$id"
         fi
+        # Re-render immediately so capture UI is replaced by a fresh submenu frame.
+        cm_render_submenu "$repo" "$sel" "$title" "$footer"
         ;;
       UNINSTALL)
         id="${ids[$sel]:-}"
