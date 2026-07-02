@@ -472,6 +472,57 @@ cm_render_submenu() {
 }
 
 # Drive the component checklist for one repo until the user leaves it.
+# Print the controls that are meaningful for a repository's current component
+# metadata. Optional controls are capability-driven so callers add them by
+# returning framework metadata, never by teaching this renderer repository ids.
+#
+# Arguments:
+#   $1 - repo id whose component capabilities are inspected.
+#   $2 - "standalone" for an apply action, otherwise an embedded back action.
+cm_submenu_footer() {
+  local repo="$1" mode="${2:-embedded}" id
+  local has_rebind=0 has_details=0 has_favorite=0 has_startup=0
+  local has_workspace=0 has_sticky=0 has_installed=0 footer
+
+  for id in ${CM_COMP_IDS[$repo]:-}; do
+    [[ -n "$id" ]] || continue
+    if [[ "${CM_COMP_CONFIGURE_ELIGIBLE[$repo|$id]:-0}" == "1" ]]; then
+      if [[ -n "${CM_COMP_CONFIG_VALUE[$repo|$id]:-}" ]]; then
+        has_rebind=1
+      else
+        has_details=1
+      fi
+    fi
+    [[ "${CM_COMP_FAVORITE_ELIGIBLE[$repo|$id]:-0}" == "1" ]] && has_favorite=1
+    [[ "${CM_COMP_STARTUP_ELIGIBLE[$repo|$id]:-0}" == "1" ]] && has_startup=1
+    [[ "${CM_COMP_WORKSPACE_ELIGIBLE[$repo|$id]:-0}" == "1" ]] && has_workspace=1
+    [[ "${CM_COMP_STICKY_ELIGIBLE[$repo|$id]:-0}" == "1" ]] && has_sticky=1
+    [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]] && has_installed=1
+  done
+
+  footer='[↑/↓] move'
+  if (( has_rebind && has_details )); then
+    footer+='  [→] rebind/details'
+  elif (( has_rebind )); then
+    footer+='  [→] rebind'
+  elif (( has_details )); then
+    footer+='  [→] details'
+  fi
+  footer+='  [space] toggle'
+  (( has_favorite )) && footer+='  [f] favourite'
+  (( has_startup )) && footer+='  [s] startup'
+  (( has_workspace )) && footer+='  [1-9] workspace'
+  (( has_sticky )) && footer+='  [p] all workspaces'
+  (( has_installed )) && footer+='  [u] uninstall'
+  if [[ "$mode" == "standalone" ]]; then
+    footer+='  [enter] apply'
+  else
+    footer+='  [←/enter] back'
+  fi
+  printf '%s' "$footer"
+}
+
+# Drive the component checklist for one repo until the user leaves it.
 #
 # Arguments:
 #   $1 - repo id
@@ -486,10 +537,8 @@ cm_submenu_loop() {
   local sel=0 key id title footer
   cm_comp_ids_for_repo "$repo" ids
   title="Configure components"
-  if [[ "$mode" == "standalone" ]]; then
-    footer="[↑/↓] move  [→] rebind/details  [space] toggle  [f] favourite  [s] startup  [1-9] workspace  [p] all workspaces  [u] uninstall  [enter] apply"
-  else
-    footer="[↑/↓] move  [→] rebind/details  [space] toggle  [f] favourite  [s] startup  [1-9] workspace  [p] all workspaces  [u] uninstall  [←/enter] back"
+  footer="$(cm_submenu_footer "$repo" "$mode")"
+  if [[ "$mode" != "standalone" ]]; then
     cm_show_cursor
   fi
   if (( ${#ids[@]} == 0 )); then

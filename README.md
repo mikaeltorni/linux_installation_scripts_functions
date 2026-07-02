@@ -180,6 +180,11 @@ selects an installed component for **reconfigure** (`~`), `[u]` marks it for
 desktop login for app components that expose the corresponding metadata. Rows
 show `F`, `S`, or `FS` when either or both app actions are selected. Editable
 rows show their current value in brackets; RIGHT opens the rebind/details field.
+The footer is derived from loaded component metadata: navigation and toggle
+remain universal, while RIGHT, favourite, startup, workspace, all-workspaces,
+and uninstall hints appear only when at least one row supports that action.
+This keeps application actions out of non-application repositories without
+hardcoding repository names in the menu engine.
 
 In the aggregate master menu, setting `ISC_MENU_DEBUG=1` exposes `[l] log state`.
 That action writes a quiet snapshot of every repository and component state

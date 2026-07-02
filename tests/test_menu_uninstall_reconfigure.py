@@ -426,6 +426,73 @@ LINES=40 cm_render_submenu "$repo" 0 'Configure components' 'footer'
     assert "rebind" in result.stdout
 
 
+def test_footer_only_advertises_actions_exposed_by_component_metadata():
+    """Repository-neutral metadata controls which optional actions are shown."""
+    script = f"""
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_COMP_IDS[$repo]='alpha beta'
+CM_COMP_CONFIGURE_ELIGIBLE[$repo|alpha]=1
+CM_COMP_CONFIG_VALUE[$repo|alpha]='Super+W'
+CM_COMP_FAVORITE_ELIGIBLE[$repo|beta]=1
+CM_COMP_STARTUP_ELIGIBLE[$repo|beta]=1
+CM_COMP_WORKSPACE_ELIGIBLE[$repo|beta]=1
+CM_COMP_STICKY_ELIGIBLE[$repo|beta]=1
+CM_COMP_INSTALLED[$repo|alpha]=1
+cm_submenu_footer "$repo" embedded
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=REPO, check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "[↑/↓] move" in result.stdout
+    assert "[space] toggle" in result.stdout
+    assert "[→] rebind" in result.stdout
+    assert "[f] favourite" in result.stdout
+    assert "[s] startup" in result.stdout
+    assert "[1-9] workspace" in result.stdout
+    assert "[p] all workspaces" in result.stdout
+    assert "[u] uninstall" in result.stdout
+    assert "[←/enter] back" in result.stdout
+
+
+def test_footer_omits_optional_actions_when_no_component_exposes_them():
+    """Plain repository installers retain only navigation and toggling labels."""
+    script = f"""
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_COMP_IDS[$repo]='alpha'
+CM_COMP_INSTALLED[$repo|alpha]=0
+cm_submenu_footer "$repo" standalone
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=REPO, check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[↑/↓] move  [space] toggle  [enter] apply"
+
+
+def test_footer_calls_empty_configurable_fields_details_not_rebind():
+    """RIGHT says rebind only when a configurable field returns a value."""
+    script = f"""
+source "{REPO}/component_menu.sh"
+repo=demo
+CM_COMP_IDS[$repo]='alpha'
+CM_COMP_CONFIGURE_ELIGIBLE[$repo|alpha]=1
+CM_COMP_CONFIG_VALUE[$repo|alpha]=''
+cm_submenu_footer "$repo" embedded
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=REPO, check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "[→] details" in result.stdout
+    assert "rebind" not in result.stdout
+
+
 def test_submenu_renders_combined_favorite_and_startup_marker():
     """A component selected for both actions should display the compact FS marker."""
     script = f"""
