@@ -15,6 +15,7 @@
 #       component_loader.sh    - resolves/activates the framework
 #       component_logging.sh   - shared Bash leveled file logger
 #       logging_utils.py       - shared Python logging helper
+#       safe_system_action.sh  - guarded reboot/poweroff countdown
 #   - OPTIONAL (default-on, user-customizable): the menu engine, the per-repo
 #     runtime contract, and the shared install-time helpers. Each is one
 #     selectable component in installer/components.sh.
@@ -64,6 +65,8 @@ isc_install_core() {
   isc_deploy_file component_loader.sh  || rc=1
   isc_deploy_file component_logging.sh || rc=1
   isc_deploy_file logging_utils.py     || rc=1
+  isc_deploy_file safe_system_action.sh || rc=1
+  run_as_target chmod 0755 "$ISC_INSTALL_DIR/safe_system_action.sh" || rc=1
   return "$rc"
 }
 

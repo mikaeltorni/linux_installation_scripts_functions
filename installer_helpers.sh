@@ -56,6 +56,21 @@ fi
 #   Args: $* - message text. Returns: 0.
 msg() { printf "\n==> %s\n" "$*"; }
 
+# safe_system_action - Run the framework-owned audible countdown before a
+# destructive system action. Args: $1 - reboot or poweroff. Returns only when
+# the helper is missing, cancelled, or the system action fails.
+safe_system_action() {
+  local action="$1"
+  local helper="${ISC_COMPONENT_LIB_DIR:-}/safe_system_action.sh"
+  if [[ ! -f "$helper" ]]; then
+    isc_log_error "safe system action helper missing: $helper"
+    msg "ERROR: refusing $action because safe_system_action.sh is unavailable"
+    return 1
+  fi
+  isc_log_warn "starting guarded system action: $action"
+  bash "$helper" "$action"
+}
+
 # need_cmd - Test whether a command is available on PATH.
 #   Args: $1 - command name. Returns: 0 if present, non-zero otherwise.
 need_cmd() { isc_log_debug "need_cmd: checking for '$1'"; command -v "$1" >/dev/null 2>&1; }

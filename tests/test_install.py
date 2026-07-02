@@ -27,12 +27,35 @@ from logging_utils import get_logger, log_call
 
 INSTALL = REPO / "install.sh"
 
-CORE_FILES = ("component_loader.sh", "component_logging.sh", "logging_utils.py")
+CORE_FILES = (
+    "component_loader.sh",
+    "component_logging.sh",
+    "logging_utils.py",
+    "safe_system_action.sh",
+)
 OPTIONAL_FILES = {
     "menu": "component_menu.sh",
     "runtime": "component_runtime.sh",
     "installer_helpers": "installer_helpers.sh",
 }
+
+
+def test_safe_system_action_contract_is_abortable_and_audible():
+    """The destructive helper must retain its ten-second safety boundary."""
+    content = (REPO / "safe_system_action.sh").read_text(encoding="utf-8")
+
+    assert "for second in {10..1}" in content
+    assert "INT TERM" in content
+    assert "sounds/command.mp3" in content
+    assert 'printf "0 %s\\n"' in content
+    assert 'exec "${action_command[@]}"' in content
+
+
+def test_loader_downloads_safe_system_action_for_standalone_installs():
+    """Download fallback users need the same guarded action helper."""
+    content = (REPO / "component_loader.sh").read_text(encoding="utf-8")
+
+    assert "safe_system_action.sh" in content
 
 
 def run_install(args, install_dir):
@@ -52,7 +75,12 @@ def run_install(args, install_dir):
 
 def test_install_sh_syntax_is_valid():
     """install.sh and its libraries must parse cleanly."""
-    for rel in ("install.sh", "lib/framework_install.sh", "installer/components.sh"):
+    for rel in (
+        "install.sh",
+        "lib/framework_install.sh",
+        "installer/components.sh",
+        "safe_system_action.sh",
+    ):
         result = subprocess.run(
             ["bash", "-n", str(REPO / rel)], capture_output=True, text=True
         )

@@ -74,7 +74,8 @@ def test_download_fallback_includes_repeatable_fields():
         raw = tmp_path / "raw"
         raw.mkdir()
         for name in (
-            "component_logging.sh", "installer_helpers.sh", "repeatable_fields.py",
+                "component_logging.sh", "installer_helpers.sh", "safe_system_action.sh",
+                "repeatable_fields.py", "installation_config.py", "installation_config.sh",
             "component_menu.sh", "component_runtime.sh",
         ):
             raw.joinpath(name).write_bytes(REPO.joinpath(name).read_bytes())

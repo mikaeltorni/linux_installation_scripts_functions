@@ -34,6 +34,7 @@ master menu discover the same nested screens without sourcing child internals.
 | `component_loader.sh` | Resolves and activates the framework from a sibling checkout or by downloading it; exposes `isc_activate_components`. |
 | `component_logging.sh` | Centralized, dependency-free leveled logging (`verbose`/`debug`/`info`/`warn`/`error`) written to a per-repository `.log/` file with timestamps and a context tag. Sourced automatically by the loader, runtime, and menu; degrades to silent no-ops when absent. |
 | `installer_helpers.sh` | Shared install-time helpers (`run_as_target`, `msg`, `need_cmd`, `apt_install`, linked-repository auth gating, session-bus/root guards, and sudo-deferral reporting) loaded through `isc_load_helpers`; uses the same best-effort file logger. |
+| `safe_system_action.sh` | Guarded reboot/poweroff entry point with an audible 10-to-1 countdown, Ctrl+C/SIGTERM cancellation, and an extended alert at 0. |
 | `logging_utils.py` | Centralized Python logging helper for repository maintenance scripts and tests; provides idempotent `.log/` file logging and the standard `log_call` tracing decorator. |
 | `install.sh` | Component-based installer that deploys this framework as selectable modules (core always installed; menu/runtime/helpers optional, default-on). |
 | `installer/components.sh` | This repository's optional-module manifest consumed by the shared runtime. |
@@ -65,6 +66,7 @@ the framework core works no matter which optional modules are chosen:
 | `component_loader.sh` | The bootstrap/resolver — without it nothing can locate the framework. |
 | `component_logging.sh` | Shared Bash leveled file logger (logging is required). |
 | `logging_utils.py` | Shared Python logging helper (logging is required). |
+| `safe_system_action.sh` | Shared safety boundary for every reboot and poweroff request. |
 
 **Optional modules (default-on, fully customizable).** Each is one selectable
 component in `installer/components.sh`:
