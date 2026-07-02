@@ -878,10 +878,11 @@ def capture_binding_tty(
 ) -> str | None:
     """Capture one hotkey from raw terminal key presses.
 
-    Modifiers accumulate one-by-one; exactly one non-modifier key completes the
-    chord (except ``modifier_only``, which accepts one modifier). Returns the
-    GTK accelerator (or canonical modifier name) on confirm, ``None`` when the
-    user keeps the current value, and re-prompts when the binding is incomplete.
+    Modifier keys toggle on repeat press; simultaneous chord reports replace held
+    modifiers via :meth:`HotkeyBinding.set_modifiers_from_chord`. Exactly one
+    non-modifier key completes the binding (except ``modifier_only``). Returns
+    the GTK accelerator (or canonical modifier name) on confirm, ``None`` when
+    the user keeps the current value, and re-prompts when incomplete.
     """
     stream = stream or sys.stdin.buffer
     binding = HotkeyBinding()
@@ -932,7 +933,7 @@ def capture_binding_tty(
                 return finish(binding.to_accelerator())
             if result == "back":
                 redraw = True
-            if action.kind in {"mod", "key"}:
+            if action.kind in {"mod", "sync_mods", "key"}:
                 redraw = True
         return redraw
 
