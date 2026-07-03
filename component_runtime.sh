@@ -555,7 +555,13 @@ _isc_prepare_selection_state() {
     fi
   done < <(_isc_all_ids)
   CM_COMP_IDS[$repo]="${ids% }"
-  declare -F cm_reconcile_dependencies >/dev/null 2>&1 && cm_reconcile_dependencies "$repo"
+  # The menu module (owner of cm_reconcile_dependencies) is only loaded for
+  # interactive runs; a missing function must not fail this helper, or callers
+  # running under `set -e` (every child install.sh) abort in the no-TTY path.
+  if declare -F cm_reconcile_dependencies >/dev/null 2>&1; then
+    cm_reconcile_dependencies "$repo"
+  fi
+  return 0
 }
 
 # Resolve selected ids from CM_* after config/menu application.

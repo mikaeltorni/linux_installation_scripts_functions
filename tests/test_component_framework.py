@@ -8,6 +8,7 @@ Bash subprocesses with a synthetic manifest. No installers run and no system
 state changes.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -688,6 +689,40 @@ def test_hotkey_capture_is_opt_in():
     """
     capture = (REPO / "hotkey_capture.sh").read_text(encoding="utf-8")
     assert 'ISC_HOTKEY_INTERACTIVE:-0' in capture
+
+
+def test_no_arg_no_tty_run_survives_set_e_without_menu_module():
+    """No-arg component_main under `set -e` must apply defaults without a TTY.
+
+    Child installers run with `set -euo pipefail`. When stdin is not a TTY the
+    menu module is never loaded, so _isc_prepare_selection_state's trailing
+    cm_reconcile_dependencies guard must not surface a non-zero status —
+    otherwise every no-arg master/child run aborts before any component runs.
+    """
+    harness = HARNESS.replace("set -uo pipefail", "set -euo pipefail")
+    with tempfile.TemporaryDirectory() as tmp:
+        config_dir = Path(tmp) / "installation_configs"
+        config_dir.mkdir()
+        row = {"config_value": "", "favorite": 0, "on": 1, "startup": 0,
+               "sticky": 0, "uninstall": 0, "workspace": 0}
+        (config_dir / "default.json").write_text(json.dumps({
+            "components": {"alpha": dict(row), "beta": dict(row, on=0),
+                           "gamma": dict(row, on=0)},
+            "repo": "demo", "schema_version": 1, "scope": "standalone",
+        }), encoding="utf-8")
+        result = subprocess.run(
+            ["bash", "-c", harness, "bash"],
+            cwd=tmp,
+            check=False,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, "ISC_RECEIPT_DIR": str(Path(tmp) / "receipts")},
+        )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ran:a" in result.stdout
+    assert "ran:b" not in result.stdout
+    assert "ran:c" not in result.stdout
 
 
 if __name__ == "__main__":
