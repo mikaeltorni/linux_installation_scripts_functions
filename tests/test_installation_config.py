@@ -385,6 +385,83 @@ printf "alpha=%s beta=%s" "${{CM_COMP_ON[demo|alpha]:-0}}" "${{CM_COMP_ON[demo|b
         assert "alpha=0 beta=1" in result.stdout
 
 
+def test_config_apply_does_not_mark_installed_components_for_reconfigure():
+    """Config `on` describes desired presence, not a pending reconfigure action."""
+    fixture = REPO / "tests" / "fixtures" / "minimal_standalone_bootstrap.sh"
+    with tempfile.TemporaryDirectory() as directory:
+        state = Path(directory) / "state"
+        state.write_text(
+            "scope=standalone\n"
+            "repo_name=demo\n"
+            "comp\tdemo\talpha\t1\t0\t0\t0\t0\t0\t\n",
+            encoding="utf-8",
+        )
+        harness = f'''
+set -uo pipefail
+export ISC_REPO_NAME=demo
+source "{fixture}"
+CM_COMP_INSTALLED[demo|alpha]=1
+CM_COMP_ON[demo|alpha]=0
+isc_config_apply_state_file "{state}"
+printf 'alpha=%s' "${{CM_COMP_ON[demo|alpha]:-missing}}"
+'''
+        result = subprocess.run(
+            ["bash", "-c", harness],
+            cwd=REPO,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert "alpha=0" in result.stdout
+
+
+def test_config_export_records_unchanged_installed_component_as_enabled():
+    """Ephemeral menu state must serialize installed presence as `on: 1`."""
+    fixture = REPO / "tests" / "fixtures" / "minimal_standalone_bootstrap.sh"
+    harness = f'''
+set -uo pipefail
+export ISC_REPO_NAME=demo
+source "{fixture}"
+CM_COMP_IDS[demo]=alpha
+CM_COMP_INSTALLED[demo|alpha]=1
+CM_COMP_ON[demo|alpha]=0
+CM_COMP_UNINSTALL[demo|alpha]=0
+isc_config_serialize_standalone demo /dev/stdout
+'''
+    result = subprocess.run(
+        ["bash", "-c", harness], cwd=REPO, check=False, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "comp\tdemo\talpha\t1\t0" in result.stdout
+
+
+def test_config_apply_preserves_live_component_config_value():
+    """Persisted selection metadata must not replace repository-reported live state."""
+    fixture = REPO / "tests" / "fixtures" / "minimal_standalone_bootstrap.sh"
+    with tempfile.TemporaryDirectory() as directory:
+        state = Path(directory) / "state"
+        state.write_text(
+            "scope=standalone\n"
+            "repo_name=demo\n"
+            "comp\tdemo\talpha\t1\t0\t0\t0\t0\t0\t500 ms\n",
+            encoding="utf-8",
+        )
+        harness = f'''
+set -uo pipefail
+export ISC_REPO_NAME=demo
+source "{fixture}"
+CM_COMP_CONFIG_VALUE[demo|alpha]='200 ms'
+isc_config_apply_state_file "{state}"
+printf 'value=%s' "${{CM_COMP_CONFIG_VALUE[demo|alpha]:-missing}}"
+'''
+        result = subprocess.run(
+            ["bash", "-c", harness], cwd=REPO, check=False, capture_output=True, text=True
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert "value=200 ms" in result.stdout
+
+
 if __name__ == "__main__":
     import pytest
 

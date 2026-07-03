@@ -76,6 +76,19 @@ isc_config_python() {
   python3 "$ISC_CONFIG_PY" "$@"
 }
 
+# _isc_config_desired_on REPO ID - Translate ephemeral menu action state into
+# persisted desired-presence state. Installed components left untouched have
+# CM_COMP_ON=0 in the menu, but remain enabled in configuration documents.
+_isc_config_desired_on() {
+  local repo="$1" id="$2"
+  if [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" \
+        && "${CM_COMP_UNINSTALL[$repo|$id]:-0}" != "1" ]]; then
+    printf '1'
+  else
+    printf '%s' "${CM_COMP_ON[$repo|$id]:-0}"
+  fi
+}
+
 # isc_config_serialize_standalone - write intermediate state for one repo.
 # Arguments: $1 repo id. Remaining args: output path (default stdout).
 isc_config_serialize_standalone() {
@@ -87,7 +100,7 @@ isc_config_serialize_standalone() {
     for id in ${CM_COMP_IDS[$repo]:-}; do
       printf 'comp\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$repo" "$id" \
-        "${CM_COMP_ON[$repo|$id]:-0}" \
+        "$(_isc_config_desired_on "$repo" "$id")" \
         "${CM_COMP_UNINSTALL[$repo|$id]:-0}" \
         "${CM_COMP_FAVORITE_ON[$repo|$id]:-0}" \
         "${CM_COMP_STARTUP_ON[$repo|$id]:-0}" \
@@ -109,7 +122,7 @@ isc_config_serialize_master() {
       for id in ${CM_COMP_IDS[$repo]:-}; do
         printf 'comp\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
           "$repo" "$id" \
-          "${CM_COMP_ON[$repo|$id]:-0}" \
+          "$(_isc_config_desired_on "$repo" "$id")" \
           "${CM_COMP_UNINSTALL[$repo|$id]:-0}" \
           "${CM_COMP_FAVORITE_ON[$repo|$id]:-0}" \
           "${CM_COMP_STARTUP_ON[$repo|$id]:-0}" \
@@ -144,13 +157,26 @@ isc_config_apply_state_file() {
         ;;
       comp$'\t'*)
         IFS=$'\t' read -r _ comp_repo comp_id on_v uninstall_v favorite_v startup_v workspace_v sticky_v config_value <<<"$line"
-        CM_COMP_ON[$comp_repo|$comp_id]="${on_v:-0}"
+        # A config document records desired presence. For an already-installed
+        # component, `on: 1` therefore means "keep installed", not "queue a
+        # reconfigure". Reconfigure is an ephemeral menu action selected with
+        # SPACE/[r] and must never be restored from default.json.
+        if [[ "${CM_COMP_INSTALLED[$comp_repo|$comp_id]:-0}" == "1" ]]; then
+          CM_COMP_ON[$comp_repo|$comp_id]=0
+        else
+          CM_COMP_ON[$comp_repo|$comp_id]="${on_v:-0}"
+        fi
         CM_COMP_UNINSTALL[$comp_repo|$comp_id]="${uninstall_v:-0}"
         CM_COMP_FAVORITE_ON[$comp_repo|$comp_id]="${favorite_v:-0}"
         CM_COMP_STARTUP_ON[$comp_repo|$comp_id]="${startup_v:-0}"
         CM_COMP_WORKSPACE[$comp_repo|$comp_id]="${workspace_v:-0}"
         CM_COMP_STICKY_ON[$comp_repo|$comp_id]="${sticky_v:-0}"
-        CM_COMP_CONFIG_VALUE[$comp_repo|$comp_id]="${config_value:-}"
+        # Repository status functions report authoritative live values during
+        # discovery. Config JSON stores a snapshot for diff/export purposes;
+        # only use it when the repository cannot report a current value.
+        if [[ -z "${CM_COMP_CONFIG_VALUE[$comp_repo|$comp_id]:-}" ]]; then
+          CM_COMP_CONFIG_VALUE[$comp_repo|$comp_id]="${config_value:-}"
+        fi
         ;;
     esac
   done <"$state_file"
