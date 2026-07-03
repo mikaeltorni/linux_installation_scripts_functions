@@ -106,6 +106,20 @@ declare -gA CM_COMP_WORKSPACE_ELIGIBLE CM_COMP_WORKSPACE 2>/dev/null || true
 declare -gA CM_COMP_STICKY_ELIGIBLE CM_COMP_STICKY_ON 2>/dev/null || true
 declare -gA CM_COMP_CONFIGURE_ELIGIBLE 2>/dev/null || true
 declare -gA CM_COMP_CONFIG_VALUE 2>/dev/null || true
+# Locked components: CM_COMP_LOCKED[repo|id]=1 means the component is
+# force-selected and cannot be turned off by the user (SPACE, NONE, or disabling
+# the whole repository). Used by the master installer to enforce cross-repository
+# runtime dependencies such as tmux (installed by linux_installations_setup but
+# required by components in sibling repositories).
+declare -gA CM_COMP_LOCKED 2>/dev/null || true
+# Optional callback invoked after every toggle action in both the submenu and
+# the aggregate menu, so the caller can re-evaluate cross-repository dependency
+# locks and update CM_NOTICE. Called with no arguments; reads/writes CM_* state.
+declare -g  CM_POST_TOGGLE_CALLBACK="" 2>/dev/null || true
+# Optional notice line printed below the item list (above the footer) in both
+# the aggregate menu and submenus. Set by the post-toggle callback to surface
+# auto-installed dependencies such as "tmux will be installed ...".
+declare -g  CM_NOTICE="" 2>/dev/null || true
 declare -ga CM_REPOS 2>/dev/null || true
 
 ###############################################################################
@@ -222,6 +236,39 @@ cm_comp_ids_for_repo() {
   for raw in ${CM_COMP_IDS[$repo]:-}; do
     [[ -n "$raw" ]] && _dest+=("$raw")
   done
+}
+
+# Return whether a component is locked (force-selected, cannot be deselected).
+# A locked component stays on through SPACE, NONE, and aggregate-repo-disable;
+# the master installer uses this to enforce cross-repository runtime deps.
+#
+# Arguments:
+#   $1 - repo id
+#   $2 - component id
+cm_component_locked() {
+  [[ "${CM_COMP_LOCKED[$1|$2]:-0}" == "1" ]]
+}
+
+# Return whether a repository has any locked component.
+#
+# Arguments:
+#   $1 - repo id
+cm_repo_has_locked() {
+  local repo="$1" id
+  for id in ${CM_COMP_IDS[$repo]:-}; do
+    [[ -n "$id" ]] || continue
+    cm_component_locked "$repo" "$id" && return 0
+  done
+  return 1
+}
+
+# Invoke the post-toggle callback when one is registered. The callback re-
+# evaluates cross-repository dependency locks (e.g. tmux) and updates CM_NOTICE.
+# Called with no arguments; reads/writes the shared CM_* arrays.
+cm_run_post_toggle_callback() {
+  [[ -n "${CM_POST_TOGGLE_CALLBACK:-}" ]] || return 0
+  declare -F "$CM_POST_TOGGLE_CALLBACK" >/dev/null 2>&1 || return 0
+  "$CM_POST_TOGGLE_CALLBACK"
 }
 
 # Return whether a component's required rows are selected or already installed.
@@ -463,10 +510,20 @@ cm_render_submenu() {
         tag+=" \033[36m(→ details)\033[0m"
       fi
     fi
+    # A locked component (force-selected cross-repo dependency) gets a lock
+    # marker so the user understands why it cannot be deselected.
+    if cm_component_locked "$repo" "$id"; then
+      tag+=" \033[33m🔒 (locked)\033[0m"
+    fi
     printf '   %b %b %s%b\n' "$mark" "$box" "$label" "$tag"
   done
   if (( end < ${#ids[@]} )); then
     printf '     \033[2m... %s more below ...\033[0m\n' "$((${#ids[@]} - end))"
+  fi
+  # Print the caller-supplied notice (e.g. tmux auto-install) between the item
+  # list and the footer help line.
+  if [[ -n "${CM_NOTICE:-}" ]]; then
+    printf '\n  %s\n' "$CM_NOTICE"
   fi
   printf '\n  \033[2m%s\033[0m\n' "$footer"
 }
@@ -562,6 +619,11 @@ cm_submenu_loop() {
         id="${ids[$sel]:-}"
         [[ -z "$id" ]] && continue
         cm_component_available "$repo" "$id" || continue
+        # A locked component (cross-repo dependency such as tmux) cannot be
+        # deselected — SPACE is a no-op when it is already on.
+        if cm_component_locked "$repo" "$id" && [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]]; then
+          continue
+        fi
         # SPACE selects a component to apply (install if absent, reconfigure if
         # installed) and always clears any pending uninstall mark.
         CM_COMP_UNINSTALL[$repo|$id]=0
@@ -571,6 +633,7 @@ cm_submenu_loop() {
           CM_COMP_ON[$repo|$id]=1
         fi
         cm_reconcile_dependencies "$repo"
+        cm_run_post_toggle_callback
         ;;
       RIGHT)
         id="${ids[$sel]:-}"
@@ -673,8 +736,16 @@ cm_submenu_loop() {
           fi
         done
         cm_reconcile_dependencies "$repo"
+        cm_run_post_toggle_callback
         ;;
-      NONE) for id in "${ids[@]}"; do CM_COMP_ON[$repo|$id]=0; done ;;
+      NONE)
+        # Locked components stay on even when the user clears all selections.
+        for id in "${ids[@]}"; do
+          cm_component_locked "$repo" "$id" && continue
+          CM_COMP_ON[$repo|$id]=0
+        done
+        cm_run_post_toggle_callback
+        ;;
       LEFT)
         [[ "$mode" == "embedded" ]] && return 0
         ;;
@@ -780,6 +851,11 @@ cm_render_aggregate() {
   if (( end < ${#CM_REPOS[@]} )); then
     printf '     \033[2m... %s more below ...\033[0m\n' "$((${#CM_REPOS[@]} - end))"
   fi
+  # Print the caller-supplied notice (e.g. tmux auto-install) between the repo
+  # list and the footer help line.
+  if [[ -n "${CM_NOTICE:-}" ]]; then
+    printf '\n  %s\n' "$CM_NOTICE"
+  fi
   if [[ "${ISC_MENU_DEBUG:-0}" == "1" ]]; then
     printf '\n  \033[2m[↑/↓] move   [space] enable/disable   [→] configure (incl. reconfigure/uninstall)   [l] log state   [enter] apply   [q] cancel\033[0m\n'
   else
@@ -806,11 +882,18 @@ cm_aggregate_menu() {
       DOWN)  sel=$((sel + 1)) ;;
       SPACE)
         [[ -z "$repo" ]] && continue
+        # A repository that has any locked component (e.g. tmux locked because a
+        # sibling-repo component depends on it) cannot be disabled from the
+        # aggregate menu — the locked dependency must stay selected.
+        if [[ "${CM_REPO_ENABLED[$repo]:-0}" == "1" ]] && cm_repo_has_locked "$repo"; then
+          continue
+        fi
         if [[ "${CM_REPO_ENABLED[$repo]:-0}" == "1" ]]; then
           CM_REPO_ENABLED[$repo]=0
         else
           CM_REPO_ENABLED[$repo]=1
         fi
+        cm_run_post_toggle_callback
         ;;
       RIGHT)
         [[ -z "$repo" ]] && continue
@@ -818,6 +901,9 @@ cm_aggregate_menu() {
         [[ "$(cm_repo_total_count "$repo")" == "0" ]] && continue
         cm_submenu_loop "$repo" embedded
         cm_hide_cursor
+        # Re-evaluate cross-repo locks after returning from a submenu: the user
+        # may have toggled a component that adds or removes a tmux dependency.
+        cm_run_post_toggle_callback
         ;;
       LOG)
         [[ "${ISC_MENU_DEBUG:-0}" == "1" ]] || continue
