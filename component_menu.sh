@@ -458,7 +458,7 @@ cm_render_submenu() {
     fi
     if [[ "${CM_COMP_CONFIGURE_ELIGIBLE[$repo|$id]:-0}" == "1" ]]; then
       if [[ -n "$config_value" ]]; then
-        tag+=" \033[36m(→ rebind)\033[0m"
+        tag+=" \033[36m(→ edit)\033[0m"
       else
         tag+=" \033[36m(→ details)\033[0m"
       fi
@@ -481,14 +481,14 @@ cm_render_submenu() {
 #   $2 - "standalone" for an apply action, otherwise an embedded back action.
 cm_submenu_footer() {
   local repo="$1" mode="${2:-embedded}" id
-  local has_rebind=0 has_details=0 has_favorite=0 has_startup=0
+  local has_edit=0 has_details=0 has_favorite=0 has_startup=0
   local has_workspace=0 has_sticky=0 has_installed=0 footer
 
   for id in ${CM_COMP_IDS[$repo]:-}; do
     [[ -n "$id" ]] || continue
     if [[ "${CM_COMP_CONFIGURE_ELIGIBLE[$repo|$id]:-0}" == "1" ]]; then
       if [[ -n "${CM_COMP_CONFIG_VALUE[$repo|$id]:-}" ]]; then
-        has_rebind=1
+        has_edit=1
       else
         has_details=1
       fi
@@ -501,10 +501,10 @@ cm_submenu_footer() {
   done
 
   footer='[↑/↓] move'
-  if (( has_rebind && has_details )); then
-    footer+='  [→] rebind/details'
-  elif (( has_rebind )); then
-    footer+='  [→] rebind'
+  if (( has_edit && has_details )); then
+    footer+='  [→] edit/details'
+  elif (( has_edit )); then
+    footer+='  [→] edit'
   elif (( has_details )); then
     footer+='  [→] details'
   fi

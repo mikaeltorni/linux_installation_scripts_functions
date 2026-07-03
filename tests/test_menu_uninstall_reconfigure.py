@@ -293,7 +293,7 @@ printf 'transcript=%s\\n' "$(cat "{transcript}" 2>/dev/null || true)"
         assert result.returncode == 0, stderr
         plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", stdout)
         assert "Configure components" in plain
-        assert "rebind" in plain.lower()
+        assert "edit" in plain.lower()
         assert "[Super+U]" in plain
         assert "value=Super+U" in stdout
         assert "107;9u" not in stderr
@@ -450,8 +450,8 @@ printf 'value=%s\\n' "${{CM_COMP_CONFIG_VALUE[$repo|ws1]:-}}"
         assert "WORKSPACE_SWITCH_1=<Control><Shift>u" in config.read_text(encoding="utf-8")
 
 
-def test_configurable_value_is_rendered_with_rebind_action():
-    """Editable components show their current value and explicit rebind affordance."""
+def test_configurable_value_is_rendered_with_edit_action():
+    """Editable components show their current value and a generic edit affordance."""
     script = f"""
 source "{REPO}/component_menu.sh"
 repo=demo
@@ -471,7 +471,7 @@ LINES=40 cm_render_submenu "$repo" 0 'Configure components' 'footer'
     )
     assert result.returncode == 0, result.stderr
     assert "[Super+W]" in result.stdout
-    assert "rebind" in result.stdout
+    assert "edit" in result.stdout
 
 
 def test_footer_only_advertises_actions_exposed_by_component_metadata():
@@ -496,7 +496,7 @@ cm_submenu_footer "$repo" embedded
     assert result.returncode == 0, result.stderr
     assert "[↑/↓] move" in result.stdout
     assert "[space] toggle" in result.stdout
-    assert "[→] rebind" in result.stdout
+    assert "[→] edit" in result.stdout
     assert "[f] favourite" in result.stdout
     assert "[s] startup" in result.stdout
     assert "[1-9] workspace" in result.stdout
@@ -522,8 +522,8 @@ cm_submenu_footer "$repo" standalone
     assert result.stdout.strip() == "[↑/↓] move  [space] toggle  [enter] apply"
 
 
-def test_footer_calls_empty_configurable_fields_details_not_rebind():
-    """RIGHT says rebind only when a configurable field returns a value."""
+def test_footer_calls_empty_configurable_fields_details_not_edit():
+    """RIGHT says edit only when a configurable field returns a value."""
     script = f"""
 source "{REPO}/component_menu.sh"
 repo=demo
@@ -538,7 +538,7 @@ cm_submenu_footer "$repo" embedded
 
     assert result.returncode == 0, result.stderr
     assert "[→] details" in result.stdout
-    assert "rebind" not in result.stdout
+    assert "edit" not in result.stdout
 
 
 def test_submenu_renders_combined_favorite_and_startup_marker():
