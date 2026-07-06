@@ -25,13 +25,62 @@ find_beep_file() {
   return 1
 }
 
+# find_audio_user - resolve the desktop user whose audio session should play
+# the beep when this script runs as root.
+#
+# Root has no PipeWire/PulseAudio session of its own, so ffplay run directly
+# as root fails silently and the countdown becomes mute. Prefer the explicit
+# TARGET_USER the framework already uses, then the sudo invoker, then the
+# owner of the first live /run/user/<uid> runtime directory.
+#
+# Outputs:
+#   0; prints "<user>:<uid>" on stdout, or returns 1 when none is found.
+find_audio_user() {
+  local candidate uid runtime_dir
+  for candidate in "${TARGET_USER:-}" "${SUDO_USER:-}"; do
+    [[ -n "$candidate" && "$candidate" != "root" ]] || continue
+    uid="$(id -u "$candidate" 2>/dev/null)" || continue
+    [[ -d "/run/user/$uid" ]] || continue
+    printf '%s:%s' "$candidate" "$uid"
+    return 0
+  done
+  for runtime_dir in /run/user/*; do
+    [[ -d "$runtime_dir" ]] || continue
+    uid="${runtime_dir##*/}"
+    [[ "$uid" =~ ^[0-9]+$ && "$uid" -ne 0 ]] || continue
+    candidate="$(id -un "$uid" 2>/dev/null)" || continue
+    printf '%s:%s' "$candidate" "$uid"
+    return 0
+  done
+  return 1
+}
+
 beep_file="$(find_beep_file || true)"
 beep_pid=""
+audio_user=""
+audio_uid=""
+if [[ "$(id -u)" -eq 0 ]]; then
+  if audio_spec="$(find_audio_user)"; then
+    audio_user="${audio_spec%%:*}"
+    audio_uid="${audio_spec##*:}"
+  fi
+fi
 
 play_beep() {
   if [[ -n "$beep_file" ]] && command -v ffplay >/dev/null 2>&1; then
-    ffplay -nodisp -autoexit -loglevel quiet "$beep_file" </dev/null >/dev/null 2>&1 &
-    beep_pid=$!
+    if [[ -n "$audio_user" ]]; then
+      # Run the player inside the desktop user's audio session; root itself
+      # has no PipeWire/PulseAudio server, so playing directly would be mute.
+      sudo -u "$audio_user" \
+        XDG_RUNTIME_DIR="/run/user/$audio_uid" \
+        PULSE_SERVER="unix:/run/user/$audio_uid/pulse/native" \
+        ffplay -nodisp -autoexit -loglevel quiet "$beep_file" \
+        </dev/null >/dev/null 2>&1 &
+      beep_pid=$!
+    else
+      ffplay -nodisp -autoexit -loglevel quiet "$beep_file" </dev/null >/dev/null 2>&1 &
+      beep_pid=$!
+    fi
   else
     printf '\a' >&2
   fi
