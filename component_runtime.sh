@@ -93,14 +93,17 @@ fi
 #   $1 - component id to look up.
 #   $2 - field index: 0=id, 1=label, 2=default, 3=function, 4=detect,
 #        5=uninstall, 6=section, 7=requires, 8=nested configurator,
-#        9=config status function.
+#        9=config status function, 10="select_configure" when toggling the
+#        component on in a menu must immediately open its nested configurator
+#        (used for components that cannot install without a typed setting,
+#        e.g. a repository name).
 #
 # Returns:
 #   0 and prints the requested field when the id exists; 1 when no entry matches.
 _isc_field() {
-  local want_id="$1" field="$2" entry id label def fn detect uninstall section requires configure status
+  local want_id="$1" field="$2" entry id label def fn detect uninstall section requires configure status select_configure
   for entry in "${ISC_COMPONENTS[@]}"; do
-    IFS='|' read -r id label def fn detect uninstall section requires configure status <<<"$entry"
+    IFS='|' read -r id label def fn detect uninstall section requires configure status select_configure <<<"$entry"
     if [[ "$id" == "$want_id" ]]; then
       case "$field" in
         0) printf '%s' "$id" ;;
@@ -113,6 +116,7 @@ _isc_field() {
         7) printf '%s' "$requires" ;;
         8) printf '%s' "$configure" ;;
         9) printf '%s' "$status" ;;
+        10) printf '%s' "$select_configure" ;;
       esac
       return 0
     fi
@@ -344,6 +348,16 @@ _isc_list_configurable_components() {
   return 0
 }
 
+# List component ids whose nested configurator must open immediately when the
+# component is toggled on in a menu (manifest field 10 = "select_configure").
+_isc_list_select_configure_components() {
+  local id
+  while IFS= read -r id; do
+    [[ "$(_isc_field "$id" 10)" == "select_configure" ]] && printf '%s\n' "$id"
+  done < <(_isc_all_ids)
+  return 0
+}
+
 # Print ``id<TAB>friendly current value`` for editable components whose tenth
 # manifest field names a side-effect-free status function.
 _isc_list_component_config_values() {
@@ -508,7 +522,7 @@ _isc_prepare_selection_state() {
     declare -gA CM_COMP_STARTUP_ELIGIBLE CM_COMP_STARTUP_ON CM_COMP_STARTUP_SPECS
     declare -gA CM_COMP_WORKSPACE_ELIGIBLE CM_COMP_WORKSPACE CM_COMP_WORKSPACE_SPECS
     declare -gA CM_COMP_STICKY_ELIGIBLE CM_COMP_STICKY_ON CM_COMP_STICKY_SPECS
-    declare -gA CM_COMP_CONFIGURE_ELIGIBLE CM_COMP_CONFIG_VALUE
+    declare -gA CM_COMP_CONFIGURE_ELIGIBLE CM_COMP_CONFIG_VALUE CM_COMP_CONFIGURE_ON_SELECT
     declare -ga CM_REPOS
   fi
   CM_REPOS=("$repo")
@@ -525,6 +539,11 @@ _isc_prepare_selection_state() {
       CM_COMP_CONFIGURE_ELIGIBLE[$repo|$id]=1
     else
       CM_COMP_CONFIGURE_ELIGIBLE[$repo|$id]=0
+    fi
+    if [[ "$(_isc_field "$id" 10)" == "select_configure" ]]; then
+      CM_COMP_CONFIGURE_ON_SELECT[$repo|$id]=1
+    else
+      CM_COMP_CONFIGURE_ON_SELECT[$repo|$id]=0
     fi
     CM_COMP_CONFIG_VALUE[$repo|$id]=""
     local status_fn
@@ -589,6 +608,7 @@ Usage:
   bash install.sh --auth          Allow authenticated Git clone/pull in components
   bash install.sh --list-components  List: id<TAB>label<TAB>default[<TAB>section[<TAB>requires]]
   bash install.sh --list-configurable-components  List ids with nested detail screens
+  bash install.sh --list-select-configure-components  List ids that configure on select
   bash install.sh --list-component-config-values  List editable ids and current values
   bash install.sh --configure-component ID  Open one nested detail screen
   bash install.sh --detect        Show install state as: id<TAB>installed|absent
@@ -663,6 +683,11 @@ _isc_interactive_select() {
     else
       CM_COMP_CONFIGURE_ELIGIBLE[$repo|$id]=0
     fi
+    if [[ "$(_isc_field "$id" 10)" == "select_configure" ]]; then
+      CM_COMP_CONFIGURE_ON_SELECT[$repo|$id]=1
+    else
+      CM_COMP_CONFIGURE_ON_SELECT[$repo|$id]=0
+    fi
     CM_COMP_CONFIG_VALUE[$repo|$id]=""
     local status_fn
     status_fn="$(_isc_field "$id" 9)"
@@ -725,7 +750,7 @@ isc_route_readonly_args() {
   local arg
   for arg in "$@"; do
     case "$arg" in
-      --list-components|--export-selection|--list-configurable-components|--list-component-config-values|--configure-component|--configure-component=*|--detect|--help|-h|--uninstall|--uninstall=*)
+      --list-components|--export-selection|--list-configurable-components|--list-select-configure-components|--list-component-config-values|--configure-component|--configure-component=*|--detect|--help|-h|--uninstall|--uninstall=*)
         component_main "$@"
         return $?
         ;;
@@ -759,6 +784,7 @@ component_main() {
     case "$1" in
       --list-components) _isc_list_components; return 0 ;;
       --list-configurable-components) _isc_list_configurable_components; return 0 ;;
+      --list-select-configure-components) _isc_list_select_configure_components; return 0 ;;
       --list-component-config-values) _isc_list_component_config_values; return 0 ;;
       --configure-component) _isc_configure_component "${2:-}"; return $? ;;
       --configure-component=*) _isc_configure_component "${1#*=}"; return $? ;;

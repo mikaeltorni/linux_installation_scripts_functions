@@ -106,6 +106,7 @@ declare -gA CM_COMP_WORKSPACE_ELIGIBLE CM_COMP_WORKSPACE 2>/dev/null || true
 declare -gA CM_COMP_STICKY_ELIGIBLE CM_COMP_STICKY_ON 2>/dev/null || true
 declare -gA CM_COMP_CONFIGURE_ELIGIBLE 2>/dev/null || true
 declare -gA CM_COMP_CONFIG_VALUE 2>/dev/null || true
+declare -gA CM_COMP_CONFIGURE_ON_SELECT 2>/dev/null || true
 # Locked components: CM_COMP_LOCKED[repo|id]=1 means the component is
 # force-selected and cannot be turned off by the user (SPACE, NONE, or disabling
 # the whole repository). Used by the master installer to enforce cross-repository
@@ -631,6 +632,21 @@ cm_submenu_loop() {
           CM_COMP_ON[$repo|$id]=0
         else
           CM_COMP_ON[$repo|$id]=1
+          # Components flagged select_configure cannot install without a typed
+          # setting (e.g. a repository name): open their configurator right
+          # here, and revert the toggle when it is cancelled or fails.
+          if [[ "${CM_COMP_CONFIGURE_ON_SELECT[$repo|$id]:-0}" == "1" ]] \
+             && [[ -n "${CM_CONFIGURE_CALLBACK:-}" ]] \
+             && declare -F "$CM_CONFIGURE_CALLBACK" >/dev/null 2>&1; then
+            isc_log_info "opening select-configure prompt repo=$repo component=$id"
+            if ! "$CM_CONFIGURE_CALLBACK" "$repo" "$id"; then
+              isc_log_warn "select-configure cancelled or failed repo=$repo component=$id — reverting toggle"
+              CM_COMP_ON[$repo|$id]=0
+            fi
+            # Re-render immediately so the prompt output is replaced by a
+            # fresh submenu frame (same as the RIGHT/edit flow).
+            cm_render_submenu "$repo" "$sel" "$title" "$footer"
+          fi
         fi
         cm_reconcile_dependencies "$repo"
         cm_run_post_toggle_callback
