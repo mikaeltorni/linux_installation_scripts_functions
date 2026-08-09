@@ -793,6 +793,31 @@ def test_preflight_is_still_skipped_for_a_blank_selection():
     assert "preflight" not in out, out
 
 
+def test_default_skips_dependent_whose_requirement_is_off_without_failing():
+    """`--default` must stay installable when a default-on entry depends on a
+    default-off one: the dependent is skipped with a warning, like the
+    interactive menu's silent reconcile, and the run still succeeds."""
+    dependency_harness = HARNESS.replace(
+        '"alpha|Alpha|on|comp_a"', '"alpha|Alpha|off|comp_a"'
+    ).replace(
+        '"beta|Beta|on|comp_b"', '"beta|Beta|on|comp_b|||Agent tools|alpha"'
+    )
+    with tempfile.TemporaryDirectory() as receipt_dir:
+        result = subprocess.run(
+            ["bash", "-c", dependency_harness, "bash", "--default"],
+            cwd=REPO,
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "ISC_RECEIPT_DIR": receipt_dir},
+        )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "requires component 'alpha'" in result.stdout
+    assert "ran:b" not in result.stdout
+    assert "Components with failures" not in result.stdout
+
+
 if __name__ == "__main__":
     tests = [v for n, v in globals().items() if n.startswith("test_") and callable(v)]
     failures = 0

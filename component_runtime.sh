@@ -422,12 +422,21 @@ _isc_requirements_satisfied() {
 #
 # Arguments:
 #   $1 - whitespace-separated list of selected component ids
+#   $2 - selection origin: "strict" (the user named these ids explicitly, e.g.
+#        --select) or "derived" (the set was computed from the manifest or the
+#        menu, e.g. --default/--all/interactive; default). A dependent whose
+#        requirements are unavailable is a hard failure only for a strict
+#        selection; for a derived one it is skipped with a warning, mirroring
+#        the menu's silent dependency reconcile, so a manifest whose default-on
+#        entry depends on a default-off one still yields an installable
+#        --default run instead of aborting the master installer.
 #
 # Returns:
 #   0 when all selected components succeeded; 1 when one or more failed;
 #   2 when ISC_CORE failed (components are not attempted on a broken core).
 _isc_run_selected() {
   local selected=" $(tr ',\n' '  ' <<<"$1") "
+  local strictness="${2:-derived}"
   local completed=" "
   local entry id label def fn detect uninstall section requires requirement ran=0
   local -a failed=()
@@ -453,9 +462,13 @@ _isc_run_selected() {
           break
         fi
       done
-      isc_log_error "component '$id' requires unavailable component '$requirement'"
       msg "WARN: component '$id' requires component '$requirement' to be selected or installed — skipping"
-      failed+=("$id")
+      if [[ "$strictness" == "strict" ]]; then
+        isc_log_error "component '$id' requires unavailable component '$requirement'"
+        failed+=("$id")
+      else
+        isc_log_warn "skipping '$id': requirement '$requirement' is not selected or installed"
+      fi
       continue
     fi
     # Run the optional one-time preflight (e.g. ensuring the session bus) just
@@ -850,7 +863,7 @@ component_main() {
   case "$mode" in
     default)   _isc_run_selected "$(_isc_default_ids)"; return $? ;;
     all)       _isc_run_selected "$(_isc_all_ids)";     return $? ;;
-    select)    _isc_run_selected "$select_ids";         return $? ;;
+    select)    _isc_run_selected "$select_ids" strict;  return $? ;;
     uninstall) _isc_uninstall_selected "$select_ids";   return $? ;;
     "")
       # No mode requested. Use the interactive submenu on a real terminal,
