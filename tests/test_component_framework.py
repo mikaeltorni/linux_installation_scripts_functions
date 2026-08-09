@@ -725,6 +725,74 @@ def test_no_arg_no_tty_run_survives_set_e_without_menu_module():
     assert "ran:c" not in result.stdout
 
 
+CORE_HARNESS = """
+set -uo pipefail
+source "{repo}/component_runtime.sh"
+comp_a() {{ echo "ran:a"; }}
+comp_b() {{ echo "ran:b"; }}
+pre() {{ echo "preflight"; }}
+core() {{ echo "core"; return {core_rc}; }}
+ISC_REPO_NAME="demo"
+ISC_REPO_LABEL="Demo"
+ISC_PREFLIGHT="pre"
+ISC_CORE="core"
+ISC_COMPONENTS=(
+  "alpha|Alpha|on|comp_a"
+  "beta|Beta|off|comp_b"
+)
+component_main "$@"
+"""
+
+
+def run_core(args, core_rc=0):
+    """Run a harness that declares an ISC_CORE hook; return (rc, stdout)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        result = subprocess.run(
+            ["bash", "-c", CORE_HARNESS.format(repo=REPO, core_rc=core_rc), "bash", *args],
+            cwd=REPO,
+            check=False,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, "ISC_RECEIPT_DIR": str(Path(tmp) / "receipts")},
+        )
+    return result.returncode, result.stdout + result.stderr
+
+
+def test_core_hook_runs_even_for_a_blank_selection():
+    """ISC_CORE must install the repo core even when no component is selected."""
+    rc, out = run_core(["--select", ""])
+    assert rc == 0, out
+    assert "core" in out, out
+    assert "No components selected" in out, out
+    assert "ran:a" not in out, out
+
+
+def test_core_hook_runs_once_before_any_component():
+    """ISC_CORE runs exactly once, ahead of the first component and the preflight."""
+    rc, out = run_core(["--all"])
+    assert rc == 0, out
+    lines = [line for line in out.splitlines() if line in ("core", "preflight", "ran:a", "ran:b")]
+    assert lines.count("core") == 1, out
+    assert lines.index("core") < lines.index("preflight") < lines.index("ran:a"), out
+    assert "ran:b" in out, out
+
+
+def test_core_hook_failure_aborts_before_components_run():
+    """A failing ISC_CORE is fatal: components must not install on a broken core."""
+    rc, out = run_core(["--all"], core_rc=1)
+    assert rc == 2, out
+    assert "ran:a" not in out, out
+    assert "ran:b" not in out, out
+
+
+def test_preflight_is_still_skipped_for_a_blank_selection():
+    """ISC_PREFLIGHT keeps its per-run semantics: a no-op run starts nothing."""
+    rc, out = run_core(["--select", ""])
+    assert rc == 0, out
+    assert "preflight" not in out, out
+
+
 if __name__ == "__main__":
     tests = [v for n, v in globals().items() if n.startswith("test_") and callable(v)]
     failures = 0

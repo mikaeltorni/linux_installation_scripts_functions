@@ -413,17 +413,37 @@ _isc_requirements_satisfied() {
 # Run the install functions for the given space/newline-separated ids, in
 # manifest order, continuing past failures and reporting them at the end.
 #
+# Runs the optional ISC_CORE hook first, unconditionally: the core is the part
+# of a repository that is never an optional component, so it must also install
+# when the selection is empty. ISC_PREFLIGHT is NOT a substitute — it fires only
+# in front of the first component that actually runs, so a blank selection skips
+# it (which is correct for per-run environment setup such as a session bus, and
+# wrong for "always install this").
+#
 # Arguments:
 #   $1 - whitespace-separated list of selected component ids
 #
 # Returns:
-#   0 when all selected components succeeded; 1 when one or more failed.
+#   0 when all selected components succeeded; 1 when one or more failed;
+#   2 when ISC_CORE failed (components are not attempted on a broken core).
 _isc_run_selected() {
   local selected=" $(tr ',\n' '  ' <<<"$1") "
   local completed=" "
   local entry id label def fn detect uninstall section requires requirement ran=0
   local -a failed=()
   isc_log_info "run_selected requested ids:${selected}"
+  # Install the repository core before anything else, regardless of selection.
+  if [[ -n "${ISC_CORE:-}" ]] && declare -F "$ISC_CORE" >/dev/null 2>&1; then
+    isc_log_info "running core install '$ISC_CORE'"
+    if ! "$ISC_CORE"; then
+      isc_log_error "core install '$ISC_CORE' failed — not installing components"
+      msg "ERROR: [$ISC_REPO_NAME] core install '$ISC_CORE' failed — aborting" >&2
+      return 2
+    fi
+  elif [[ -n "${ISC_CORE:-}" ]]; then
+    isc_log_warn "core install function '$ISC_CORE' is not defined — skipping"
+    msg "WARN: core install function '$ISC_CORE' is not defined — skipping" >&2
+  fi
   for entry in "${ISC_COMPONENTS[@]}"; do
     IFS='|' read -r id label def fn detect uninstall section requires <<<"$entry"
     [[ "$selected" == *" $id "* ]] || continue

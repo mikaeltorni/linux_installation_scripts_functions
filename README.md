@@ -24,7 +24,7 @@ See the full cross-repository map in
 | File | Purpose |
 |---|---|
 | `component_menu.sh` | Pure-Bash TUI engine: a two-level selection menu (repository rows with enable/disable, per-repository component submenus, and live `on/total` counts). No external dependencies. |
-| `component_runtime.sh` | The per-repository installer contract: `--list-components`, `--select id,…`, `--default`, `--all`, an interactive submenu, and optional `ISC_PREFLIGHT` / `ISC_POSTFLIGHT` hooks. |
+| `component_runtime.sh` | The per-repository installer contract: `--list-components`, `--select id,…`, `--default`, `--all`, an interactive submenu, and optional `ISC_CORE` / `ISC_PREFLIGHT` / `ISC_POSTFLIGHT` hooks. |
 | `repeatable_fields.py` | Shared one-based row mutations for repository-owned configurators that add repeated values and edit boolean/group metadata. `isc_load_helpers` exports its installed path as `ISC_REPEATABLE_FIELDS_PY`. |
 
 Component manifests may use a ninth `configure_fn` field. The shared submenu
@@ -122,6 +122,7 @@ the trailing fields are optional:
 ```bash
 ISC_REPO_NAME="example_repo"
 ISC_REPO_LABEL="Example repository"
+ISC_CORE="install_example_core"        # optional, ALWAYS runs first (see below)
 ISC_PREFLIGHT="ensure_session_bus"     # optional, runs once before components
 ISC_POSTFLIGHT="report_sudo_required"  # optional, runs once after components
 ISC_COMPONENTS=(
@@ -130,6 +131,31 @@ ISC_COMPONENTS=(
   "feature_b_status|B status bar|on|install_b_status|||Models|feature_b"
 )
 ```
+
+### Core vs. optional components
+
+Only genuinely optional features belong in `ISC_COMPONENTS`. A `default` of `on`
+means *pre-selected*, not *mandatory* — the user can always deselect it, and
+`--select ''` selects nothing at all. Whatever a repository must install to be
+useful at all (its CLI, its extension, its service) therefore has to live
+outside the manifest:
+
+```bash
+ISC_CORE="install_example_core"   # always runs, even for --select ''
+```
+
+`ISC_CORE` runs once, first, before the preflight and before any component, and
+its failure is fatal (`component_main` returns 2 and installs no components, so
+nothing is layered on top of a broken core). It must be idempotent: every
+install, re-run, and reconfigure invokes it. Calling the core function directly
+from the repository's own `main()` before `component_main "$@"` is equally
+valid.
+
+Do **not** express the core as `ISC_PREFLIGHT`. The preflight deliberately fires
+only in front of the first component that actually runs, so that a no-op run
+stays a no-op — which means a blank selection skips it and the core would never
+be installed. Keep `ISC_PREFLIGHT` for per-run environment setup (session bus,
+device selection) and `ISC_POSTFLIGHT` for end-of-run summaries.
 
 * `detect_fn` returns 0 when the component is already installed on this machine.
   When omitted, detection falls back to an **install receipt** — a marker file
