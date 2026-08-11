@@ -14,9 +14,10 @@
 # Resolution order for the library directory:
 #   1. $ISC_COMPONENT_LIB_DIR        (explicit override)
 #   2. $ISC_FUNCTIONS_DIR            (explicit path to this repo)
-#   3. $SCRIPT_DIR/../linux_installation_scripts_functions   (sibling checkout)
-#   4. $HOME/projects/linux_installation_scripts_functions   (default checkout)
-#   5. download into $XDG_CACHE_HOME/installation_scripts/components
+#   3. $ISC_LOADER_DIR               (the directory this loader was sourced from)
+#   4. $SCRIPT_DIR/../linux_installation_scripts_functions   (sibling checkout)
+#   5. $HOME/projects/linux_installation_scripts_functions   (default checkout)
+#   6. download into $XDG_CACHE_HOME/installation_scripts/components
 #
 # Usage (from a consuming install.sh):
 #   source "<sibling-or-curled>/component_loader.sh"
@@ -29,16 +30,26 @@ if [[ -n "${ISC_LOADER_SOURCED:-}" ]]; then
 fi
 ISC_LOADER_SOURCED=1
 
+# ISC_LOADER_DIR - the directory this loader was sourced from, when it is a real
+# on-disk checkout. Consumers source this file by absolute path after locating it
+# themselves, so its own location is the most reliable pointer back to the rest
+# of the framework: it needs no environment hint and survives checkouts outside
+# ~/projects as well as root/sudo runs where $HOME changes. It is empty when the
+# loader was piped in (curl | bash), where BASH_SOURCE is not a real directory.
+ISC_LOADER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || ISC_LOADER_DIR=""
+if [[ -n "$ISC_LOADER_DIR" && ! -f "$ISC_LOADER_DIR/component_loader.sh" ]]; then
+  ISC_LOADER_DIR=""
+fi
+export ISC_LOADER_DIR
+
 # Ensure the centralized logging helpers exist. Source component_logging.sh from
 # next to this loader when present, otherwise define silent no-op stubs so every
 # isc_log* call below is always safe (logging must never abort an installer).
 if ! declare -F isc_log >/dev/null 2>&1; then
-  _isc_loader_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _isc_loader_dir=""
-  if [[ -n "$_isc_loader_dir" && -f "$_isc_loader_dir/component_logging.sh" ]]; then
+  if [[ -n "$ISC_LOADER_DIR" && -f "$ISC_LOADER_DIR/component_logging.sh" ]]; then
     # shellcheck source=/dev/null
-    source "$_isc_loader_dir/component_logging.sh"
+    source "$ISC_LOADER_DIR/component_logging.sh"
   fi
-  unset _isc_loader_dir
 fi
 if ! declare -F isc_log >/dev/null 2>&1; then
   isc_log()         { :; }
@@ -67,6 +78,7 @@ isc_component_lib_dir() {
   for d in \
       "${ISC_COMPONENT_LIB_DIR:-}" \
       "${ISC_FUNCTIONS_DIR:-}" \
+      "${ISC_LOADER_DIR:-}" \
       "${SCRIPT_DIR:-}/../${ISC_FUNCTIONS_REPO}" \
       "${HOME}/projects/${ISC_FUNCTIONS_REPO}"; do
     [[ -n "$d" && -f "$d/component_runtime.sh" && -f "$d/component_menu.sh" ]] || continue
