@@ -915,7 +915,11 @@ component_main() {
         if [[ -n "${ISC_SELECTED_APPLY:-}" ]]; then
           _isc_run_selected "$ISC_SELECTED_APPLY" || apply_rc=$?
         elif [[ -z "${ISC_SELECTED_UNINSTALL:-}" ]]; then
-          msg "[$ISC_REPO_NAME] No components selected — nothing to do."
+          # A blank selection is still an install: _isc_run_selected runs the
+          # repository's ISC_CORE hook (and prints "nothing to do" itself), so
+          # deselecting every row in the menu yields a core-only install rather
+          # than a repo that was never installed at all.
+          _isc_run_selected "" || apply_rc=$?
         fi
         (( apply_rc != 0 || uninstall_rc != 0 )) && return 1
         return 0
@@ -935,8 +939,12 @@ component_main() {
         if [[ -n "${apply_ids// /}" ]]; then
           _isc_run_selected "${apply_ids% }"; return $?
         fi
-        msg "[$ISC_REPO_NAME] No components selected — nothing to do."
-        return 0
+        if [[ -n "${uninstall_ids// /}" ]]; then
+          msg "[$ISC_REPO_NAME] No components selected — nothing to do."
+          return 0
+        fi
+        # Blank config selection: still install the core (see the TTY branch).
+        _isc_run_selected ""; return $?
       fi
       ;;
   esac

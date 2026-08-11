@@ -793,6 +793,29 @@ def test_preflight_is_still_skipped_for_a_blank_selection():
     assert "preflight" not in out, out
 
 
+def test_core_hook_runs_when_the_config_selection_is_empty():
+    """A no-argument (non-TTY) run whose saved/derived selection is empty is
+    still an install of the repository core — the same guarantee `--select ''`
+    gives. Without this, deselecting every row leaves a dead repo."""
+    harness = CORE_HARNESS.replace('"alpha|Alpha|on|comp_a"', '"alpha|Alpha|off|comp_a"')
+    with tempfile.TemporaryDirectory() as tmp:
+        result = subprocess.run(
+            ["bash", "-c", harness.format(repo=REPO, core_rc=0), "bash"],
+            cwd=REPO,
+            check=False,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, "ISC_RECEIPT_DIR": str(Path(tmp) / "receipts")},
+        )
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert "core" in out, out
+    assert "No components selected" in out, out
+    assert "ran:a" not in out, out
+    assert "ran:b" not in out, out
+
+
 def test_default_skips_dependent_whose_requirement_is_off_without_failing():
     """`--default` must stay installable when a default-on entry depends on a
     default-off one: the dependent is skipped with a warning, like the
