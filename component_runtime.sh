@@ -853,6 +853,16 @@ component_main() {
       --uninstall=*)     mode="uninstall"; select_ids="${1#*=}" ;;
       --auth)            INSTALLER_AUTH=1; export INSTALLER_AUTH ;;
       --help|-h)         _isc_usage; return 0 ;;
+      -*)
+        # An unrecognized option is fatal: silently ignoring it would drop the
+        # user's intent (e.g. a mistyped '--slect kitty') and fall through to
+        # the default/config selection, installing components that were never
+        # asked for. Fail loudly instead of over-installing.
+        isc_log_error "unknown option: $1"
+        msg "ERROR: unknown option: $1"
+        _isc_usage
+        return 2
+        ;;
       *)                 isc_log_warn "ignoring unknown argument: $1"
                          msg "WARN: ignoring unknown argument: $1" ;;
     esac
