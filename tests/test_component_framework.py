@@ -68,6 +68,33 @@ def test_framework_files_exist():
         assert (REPO / name).is_file(), f"missing {name}"
 
 
+def test_lib_dir_resolves_from_the_loaders_own_location():
+    """A sourced loader must find its siblings without SCRIPT_DIR or ~/projects.
+
+    Consumer repos source ``component_loader.sh`` by absolute path after finding
+    it themselves. Those that name their root something other than ``SCRIPT_DIR``
+    (and any checkout living outside ``~/projects``, including root/sudo runs
+    where ``$HOME`` changes) previously fell through to the network. The loader
+    knows where it lives, so that location is the authoritative candidate.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        tmp_path = Path(directory)
+        result = subprocess.run(
+            ["bash", "-c", f'source "{REPO / "component_loader.sh"}"; isc_component_lib_dir'],
+            env={
+                **{k: v for k, v in os.environ.items()
+                   if k not in ("ISC_FUNCTIONS_DIR", "ISC_COMPONENT_LIB_DIR", "SCRIPT_DIR")},
+                "HOME": str(tmp_path / "scratch-home"),
+                "XDG_CACHE_HOME": str(tmp_path / "cache"),
+                # No network fallback is reachable, so any miss fails loudly.
+                "ISC_FUNCTIONS_RAW": f"file://{tmp_path / 'nonexistent'}",
+            },
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert Path(result.stdout.strip()) == REPO
+
+
 def test_download_fallback_includes_repeatable_fields():
     """A lone consumer checkout must receive the Python nested-row helper."""
     with tempfile.TemporaryDirectory() as directory:
