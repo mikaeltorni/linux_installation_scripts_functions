@@ -879,3 +879,36 @@ if __name__ == "__main__":
             failures += 1
             print(f"FAIL: {test.__doc__} - {error}")
     raise SystemExit(failures)
+
+
+def test_component_runtime_rejects_unknown_option():
+    """A mistyped flag must abort instead of silently running a default install."""
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_runtime.sh"
+ISC_REPO_NAME=test_repo
+ISC_COMPONENTS=("alpha|Alpha|on|install_alpha" "beta|Beta|on|install_beta")
+install_alpha() {{ printf 'RAN alpha\\n'; }}
+install_beta() {{ printf 'RAN beta\\n'; }}
+component_main --slect alpha
+"""
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "RAN alpha" not in result.stdout
+    assert "RAN beta" not in result.stdout
+    assert "unknown option" in (result.stdout + result.stderr).lower()
+
+
+def test_component_runtime_still_ignores_stray_positional_token():
+    """Non-option leftovers stay non-fatal so existing callers keep working."""
+    script = f"""
+set -uo pipefail
+source "{REPO}/component_runtime.sh"
+ISC_REPO_NAME=test_repo
+ISC_COMPONENTS=("alpha|Alpha|on|install_alpha")
+install_alpha() {{ printf 'RAN alpha\\n'; }}
+component_main --select alpha stray-token
+"""
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "RAN alpha" in result.stdout
