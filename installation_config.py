@@ -54,7 +54,12 @@ def parse_state_file(path: Path) -> dict[str, Any]:
             if len(parts) < 9:
                 continue
             _, comp_repo, comp_id, on_v, uninstall_v, favorite_v, startup_v, workspace_v, sticky_v = parts[:9]
-            config_value = parts[9] if len(parts) > 9 else ""
+            # Field 10 is the [m] monitor number and field 11 the component's
+            # own config value. Trailing empty fields are stripped from the
+            # line, so both are optional here; the state file is an ephemeral
+            # exchange format, always written by this same module.
+            monitor_v = parts[9] if len(parts) > 9 else ""
+            config_value = parts[10] if len(parts) > 10 else ""
             entry: dict[str, Any] = {
                 "on": _bool_int(on_v),
                 "uninstall": _bool_int(uninstall_v),
@@ -64,6 +69,8 @@ def parse_state_file(path: Path) -> dict[str, Any]:
                 "sticky": _bool_int(sticky_v),
                 "config_value": config_value,
             }
+            if str(monitor_v).isdigit():
+                entry["monitor"] = int(monitor_v)
             repos.setdefault(comp_repo, {"enabled": 1, "components": {}})
             repos[comp_repo]["components"][comp_id] = entry
 
@@ -104,6 +111,10 @@ def write_state_file(path: Path, document: dict[str, Any]) -> None:
 def _comp_line(repo: str, comp_id: str, entry: dict[str, Any]) -> str:
     """Format one tab-separated component row for the intermediate state file."""
     workspace = entry.get("workspace", 0)
+    # An absent "monitor" key (documents written before the [m] action) stays
+    # empty so applying them keeps the repository's own default instead of
+    # silently unpinning every application.
+    monitor = entry.get("monitor", "")
     config_value = str(entry.get("config_value", ""))
     return "\t".join(
         (
@@ -116,6 +127,7 @@ def _comp_line(repo: str, comp_id: str, entry: dict[str, Any]) -> str:
             str(1 if entry.get("startup") else 0),
             str(workspace),
             str(1 if entry.get("sticky") else 0),
+            str(monitor),
             config_value,
         )
     )
@@ -196,6 +208,10 @@ def _diff_component_maps(
         curr_ws = int(curr.get("workspace") or 0)
         if base_ws != curr_ws:
             changes.append(f"{prefix} workspace: {base_ws} -> {curr_ws}")
+        base_mon = int(base.get("monitor") or 0)
+        curr_mon = int(curr.get("monitor") or 0)
+        if base_mon != curr_mon:
+            changes.append(f"{prefix} monitor: {base_mon} -> {curr_mon}")
         base_cfg = str(base.get("config_value", ""))
         curr_cfg = str(curr.get("config_value", ""))
         if base_cfg != curr_cfg:
