@@ -104,6 +104,7 @@ declare -gA CM_COMP_FAVORITE_ELIGIBLE CM_COMP_FAVORITE_ON 2>/dev/null || true
 declare -gA CM_COMP_STARTUP_ELIGIBLE CM_COMP_STARTUP_ON 2>/dev/null || true
 declare -gA CM_COMP_WORKSPACE_ELIGIBLE CM_COMP_WORKSPACE 2>/dev/null || true
 declare -gA CM_COMP_STICKY_ELIGIBLE CM_COMP_STICKY_ON 2>/dev/null || true
+declare -gA CM_COMP_MONITOR_ELIGIBLE CM_COMP_MONITOR 2>/dev/null || true
 declare -gA CM_COMP_CONFIGURE_ELIGIBLE 2>/dev/null || true
 declare -gA CM_COMP_CONFIG_VALUE 2>/dev/null || true
 declare -gA CM_COMP_CONFIGURE_ON_SELECT 2>/dev/null || true
@@ -122,6 +123,12 @@ declare -g  CM_POST_TOGGLE_CALLBACK="" 2>/dev/null || true
 # auto-installed dependencies such as "tmux will be installed ...".
 declare -g  CM_NOTICE="" 2>/dev/null || true
 declare -ga CM_REPOS 2>/dev/null || true
+# Display-monitor layout used by the [m] per-application monitor action.
+# CM_MONITOR_COUNT is 0 until cm_detect_monitors runs (or when the layout
+# cannot be detected), which keeps [m] hidden instead of offering monitors that
+# may not exist. CM_MONITOR_LABELS[n] holds "n: connector (name)" for the menu.
+declare -g  CM_MONITOR_COUNT="${CM_MONITOR_COUNT:-0}" 2>/dev/null || true
+declare -gA CM_MONITOR_LABELS CM_MONITOR_CONNECTORS 2>/dev/null || true
 
 ###############################################################################
 # Terminal helpers
@@ -139,7 +146,7 @@ cm_clear() { printf '\033[2J\033[H'; }
 # Read a single keypress and echo a normalized token.
 #
 # Returns one of: UP DOWN LEFT RIGHT SPACE ENTER ESC QUIT ALL NONE FAVORITE
-# STARTUP STICKY WORKSPACE<n> UNINSTALL RECONFIG LOG OTHER.
+# STARTUP STICKY MONITOR WORKSPACE<n> UNINSTALL RECONFIG LOG OTHER.
 cm_read_key() {
   local key rest
   IFS= read -rsn1 key 2>/dev/null || { echo QUIT; return; }
@@ -165,6 +172,7 @@ cm_read_key() {
     f|F) echo FAVORITE ;;
     s|S) echo STARTUP ;;
     p|P) echo STICKY ;;
+    m|M) echo MONITOR ;;
     [0-9]) echo "WORKSPACE$key" ;;
     u|U) echo UNINSTALL ;;
     r|R) echo RECONFIG ;;
@@ -188,6 +196,62 @@ cm_repo_installed_count() {
     [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]] && count=$((count + 1))
   done
   printf '%s' "$count"
+}
+
+###############################################################################
+# Monitor layout helpers
+###############################################################################
+
+# Populate CM_MONITOR_COUNT and CM_MONITOR_LABELS from the live display layout.
+#
+# Sources monitor_layout.sh from the framework directory when isc_list_monitors
+# is not already available. Detection failure is not an error: the count stays 0
+# and the [m] action stays hidden, so a headless or pre-GNOME install still runs
+# the menu (manifest monitor defaults are applied unchanged).
+#
+# Arguments:
+#   None.
+# Returns:
+#   0 when at least one monitor was detected; 1 otherwise.
+cm_detect_monitors() {
+  local dir number connector name primary rest rows
+  CM_MONITOR_COUNT=0
+  CM_MONITOR_LABELS=()
+  CM_MONITOR_CONNECTORS=()
+  if ! declare -F isc_list_monitors >/dev/null 2>&1; then
+    for dir in "${ISC_COMPONENT_LIB_DIR:-}" \
+               "${ISC_FUNCTIONS_DIR:-}" \
+               "$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"; do
+      [[ -n "$dir" && -f "$dir/monitor_layout.sh" ]] || continue
+      # shellcheck source=/dev/null
+      source "$dir/monitor_layout.sh"
+      break
+    done
+  fi
+  if ! declare -F isc_list_monitors >/dev/null 2>&1; then
+    isc_log_warn "monitor layout helper unavailable; [m] monitor action disabled"
+    return 1
+  fi
+  rows="$(isc_list_monitors)" || {
+    isc_log_warn "no display layout detected; [m] monitor action disabled"
+    return 1
+  }
+  while IFS=$'\t' read -r number connector name primary rest; do
+    [[ "$number" =~ ^[0-9]+$ ]] || continue
+    CM_MONITOR_LABELS[$number]="$number: $connector ($name)$([[ "$primary" == "1" ]] && printf ' [primary]')"
+    CM_MONITOR_CONNECTORS[$number]="$connector"
+    (( number > CM_MONITOR_COUNT )) && CM_MONITOR_COUNT="$number"
+  done <<<"$rows"
+  isc_log_info "detected $CM_MONITOR_COUNT monitor(s) for the [m] application monitor action"
+  (( CM_MONITOR_COUNT > 0 ))
+}
+
+# Echo the menu label for a monitor number ("2: DP-4 (…) [primary]" or "2").
+#
+# Arguments:
+#   $1 - 1-based monitor number.
+cm_monitor_label() {
+  printf '%s' "${CM_MONITOR_LABELS[$1]:-$1}"
 }
 
 ###############################################################################
@@ -369,7 +433,7 @@ cm_log_component_state_snapshot() {
       label="${CM_COMP_LABEL[$repo|$id]:-$id}"
       favorite="${CM_COMP_FAVORITE_ON[$repo|$id]:-0}"
       startup="${CM_COMP_STARTUP_ON[$repo|$id]:-0}"
-      isc_log_info "component_state repo=$repo component=$id label=$label state=$state favorite=$favorite startup=$startup workspace=${CM_COMP_WORKSPACE[$repo|$id]:-0} sticky=${CM_COMP_STICKY_ON[$repo|$id]:-0} selected=${CM_COMP_ON[$repo|$id]:-0} installed=${CM_COMP_INSTALLED[$repo|$id]:-0} uninstall=${CM_COMP_UNINSTALL[$repo|$id]:-0}"
+      isc_log_info "component_state repo=$repo component=$id label=$label state=$state favorite=$favorite startup=$startup workspace=${CM_COMP_WORKSPACE[$repo|$id]:-0} sticky=${CM_COMP_STICKY_ON[$repo|$id]:-0} monitor=${CM_COMP_MONITOR[$repo|$id]:-0} selected=${CM_COMP_ON[$repo|$id]:-0} installed=${CM_COMP_INSTALLED[$repo|$id]:-0} uninstall=${CM_COMP_UNINSTALL[$repo|$id]:-0}"
     done
   done
   isc_log_info "component state snapshot end"
@@ -390,7 +454,7 @@ cm_render_submenu() {
   local repo="$1" sel="$2" title="$3" footer="$4"
   local -a ids=()
   local i id mark box label on total inst tag term_rows chrome_rows footer_rows
-  local favorite startup workspace sticky action_label requirement_labels config_value
+  local favorite startup workspace sticky monitor action_label requirement_labels config_value
   local visible_rows offset end indicators section section_count=0 previous_section=""
   cm_comp_ids_for_repo "$repo" ids
   if (( ${#ids[@]} > 0 )); then
@@ -473,22 +537,25 @@ cm_render_submenu() {
     startup="${CM_COMP_STARTUP_ON[$repo|$id]:-0}"
     workspace="${CM_COMP_WORKSPACE[$repo|$id]:-0}"
     sticky="${CM_COMP_STICKY_ON[$repo|$id]:-0}"
+    monitor="${CM_COMP_MONITOR[$repo|$id]:-0}"
     if [[ "${CM_COMP_UNINSTALL[$repo|$id]:-0}" == "1" ]]; then
       box='[\033[31m✗\033[0m]'; tag=' \033[31m(uninstall)\033[0m'
     elif ! cm_component_available "$repo" "$id"; then
       requirement_labels="$(cm_component_requirement_labels "$repo" "$id")"
       box='[\033[2m-\033[0m]'; tag=" \\033[2m(requires: $requirement_labels)\\033[0m"
-    elif [[ "$favorite" == "1" || "$startup" == "1" || "$workspace" =~ ^[1-9]$ || "$sticky" == "1" ]]; then
+    elif [[ "$favorite" == "1" || "$startup" == "1" || "$workspace" =~ ^[1-9]$ || "$sticky" == "1" || "$monitor" =~ ^[1-9]$ ]]; then
       action_label=''
       [[ "$favorite" == "1" ]] && action_label='favourite'
       [[ "$startup" == "1" ]] && action_label="${action_label:+$action_label, }startup"
       [[ "$workspace" =~ ^[1-9]$ ]] && action_label="${action_label:+$action_label, }workspace $workspace"
       [[ "$sticky" == "1" ]] && action_label="${action_label:+$action_label, }all workspaces"
+      [[ "$monitor" =~ ^[1-9]$ ]] && action_label="${action_label:+$action_label, }monitor $monitor${CM_MONITOR_CONNECTORS[$monitor]:+ (${CM_MONITOR_CONNECTORS[$monitor]})}"
       box='[\033[36m'
       [[ "$favorite" == "1" ]] && box+='F'
       [[ "$startup" == "1" ]] && box+='S'
       [[ "$workspace" =~ ^[1-9]$ ]] && box+="W$workspace"
       [[ "$sticky" == "1" ]] && box+='P'
+      [[ "$monitor" =~ ^[1-9]$ ]] && box+="M$monitor"
       box+='\033[0m]'
       if [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]]; then
         tag=" \\033[2m(installed, $action_label)\\033[0m"
@@ -540,7 +607,7 @@ cm_render_submenu() {
 cm_submenu_footer() {
   local repo="$1" mode="${2:-embedded}" id
   local has_edit=0 has_details=0 has_favorite=0 has_startup=0
-  local has_workspace=0 has_sticky=0 has_installed=0 footer
+  local has_workspace=0 has_sticky=0 has_monitor=0 has_installed=0 footer
 
   for id in ${CM_COMP_IDS[$repo]:-}; do
     [[ -n "$id" ]] || continue
@@ -555,6 +622,7 @@ cm_submenu_footer() {
     [[ "${CM_COMP_STARTUP_ELIGIBLE[$repo|$id]:-0}" == "1" ]] && has_startup=1
     [[ "${CM_COMP_WORKSPACE_ELIGIBLE[$repo|$id]:-0}" == "1" ]] && has_workspace=1
     [[ "${CM_COMP_STICKY_ELIGIBLE[$repo|$id]:-0}" == "1" ]] && has_sticky=1
+    [[ "${CM_COMP_MONITOR_ELIGIBLE[$repo|$id]:-0}" == "1" ]] && has_monitor=1
     [[ "${CM_COMP_INSTALLED[$repo|$id]:-0}" == "1" ]] && has_installed=1
   done
 
@@ -571,6 +639,9 @@ cm_submenu_footer() {
   (( has_startup )) && footer+='  [s] startup'
   (( has_workspace )) && footer+='  [1-9] workspace'
   (( has_sticky )) && footer+='  [p] all workspaces'
+  # [m] cycles through the detected monitors; hidden on a single-monitor (or
+  # undetectable) layout where there is nothing to choose between.
+  (( has_monitor && CM_MONITOR_COUNT > 1 )) && footer+='  [m] monitor'
   (( has_installed )) && footer+='  [u] uninstall'
   if [[ "$mode" == "standalone" ]]; then
     footer+='  [enter] apply'
@@ -592,7 +663,7 @@ cm_submenu_footer() {
 cm_submenu_loop() {
   local repo="$1" mode="${2:-embedded}"
   local -a ids=()
-  local sel=0 key id title footer
+  local sel=0 key id title footer monitor_next
   cm_comp_ids_for_repo "$repo" ids
   title="Configure components"
   footer="$(cm_submenu_footer "$repo" "$mode")"
@@ -683,6 +754,7 @@ cm_submenu_loop() {
           CM_COMP_STARTUP_ON[$repo|$id]=0
           CM_COMP_WORKSPACE[$repo|$id]=0
           CM_COMP_STICKY_ON[$repo|$id]=0
+          CM_COMP_MONITOR[$repo|$id]=0
         fi
         ;;
       FAVORITE)
@@ -723,6 +795,19 @@ cm_submenu_loop() {
           CM_COMP_STICKY_ON[$repo|$id]=1
           CM_COMP_WORKSPACE[$repo|$id]=0
         fi
+        ;;
+      MONITOR)
+        id="${ids[$sel]:-}"
+        [[ -z "$id" ]] && continue
+        cm_component_available "$repo" "$id" || continue
+        [[ "${CM_COMP_MONITOR_ELIGIBLE[$repo|$id]:-0}" == "1" ]] || continue
+        (( CM_MONITOR_COUNT > 1 )) || continue
+        CM_COMP_UNINSTALL[$repo|$id]=0
+        # Cycle 0 (no pin - keep the session's own placement) -> 1 .. N -> 0.
+        monitor_next=$(( ${CM_COMP_MONITOR[$repo|$id]:-0} + 1 ))
+        (( monitor_next > CM_MONITOR_COUNT )) && monitor_next=0
+        CM_COMP_MONITOR[$repo|$id]="$monitor_next"
+        isc_log_info "monitor action repo=$repo component=$id monitor=$monitor_next"
         ;;
       WORKSPACE[0-9])
         id="${ids[$sel]:-}"

@@ -98,7 +98,7 @@ isc_config_serialize_standalone() {
     printf 'repo_name=%s\n' "$repo"
     printf 'repo:%s:%s\n' "$repo" "${CM_REPO_ENABLED[$repo]:-1}"
     for id in ${CM_COMP_IDS[$repo]:-}; do
-      printf 'comp\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      printf 'comp\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$repo" "$id" \
         "$(_isc_config_desired_on "$repo" "$id")" \
         "${CM_COMP_UNINSTALL[$repo|$id]:-0}" \
@@ -106,6 +106,7 @@ isc_config_serialize_standalone() {
         "${CM_COMP_STARTUP_ON[$repo|$id]:-0}" \
         "${CM_COMP_WORKSPACE[$repo|$id]:-0}" \
         "${CM_COMP_STICKY_ON[$repo|$id]:-0}" \
+        "${CM_COMP_MONITOR[$repo|$id]:-0}" \
         "${CM_COMP_CONFIG_VALUE[$repo|$id]:-}"
     done
   } >"${out:-/dev/stdout}"
@@ -120,7 +121,7 @@ isc_config_serialize_master() {
     for repo in "${CM_REPOS[@]}"; do
       printf 'repo:%s:%s\n' "$repo" "${CM_REPO_ENABLED[$repo]:-0}"
       for id in ${CM_COMP_IDS[$repo]:-}; do
-        printf 'comp\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf 'comp\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
           "$repo" "$id" \
           "$(_isc_config_desired_on "$repo" "$id")" \
           "${CM_COMP_UNINSTALL[$repo|$id]:-0}" \
@@ -128,6 +129,7 @@ isc_config_serialize_master() {
           "${CM_COMP_STARTUP_ON[$repo|$id]:-0}" \
           "${CM_COMP_WORKSPACE[$repo|$id]:-0}" \
           "${CM_COMP_STICKY_ON[$repo|$id]:-0}" \
+          "${CM_COMP_MONITOR[$repo|$id]:-0}" \
           "${CM_COMP_CONFIG_VALUE[$repo|$id]:-}"
       done
     done
@@ -137,8 +139,8 @@ isc_config_serialize_master() {
 # isc_config_apply_state_file - read intermediate state into CM_* arrays.
 # Arguments: $1 state file path.
 isc_config_apply_state_file() {
-  local state_file="$1" line scope="" repo_name="" repo="" id
-  local on=0 uninstall=0 favorite=0 startup=0 workspace=0 sticky=0 config_value=""
+  local state_file="$1" line scope="" repo_name="" repo="" id monitor_v=""
+  local on=0 uninstall=0 favorite=0 startup=0 workspace=0 sticky=0 monitor=0 config_value=""
   [[ -f "$state_file" ]] || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line//$'\r'/}"
@@ -156,7 +158,7 @@ isc_config_apply_state_file() {
         CM_REPO_ENABLED[$repo]="$enabled"
         ;;
       comp$'\t'*)
-        IFS=$'\t' read -r _ comp_repo comp_id on_v uninstall_v favorite_v startup_v workspace_v sticky_v config_value <<<"$line"
+        IFS=$'\t' read -r _ comp_repo comp_id on_v uninstall_v favorite_v startup_v workspace_v sticky_v monitor_v config_value <<<"$line"
         # A config document records desired presence. For an already-installed
         # component, `on: 1` therefore means "keep installed", not "queue a
         # reconfigure". Reconfigure is an ephemeral menu action selected with
@@ -171,6 +173,12 @@ isc_config_apply_state_file() {
         CM_COMP_STARTUP_ON[$comp_repo|$comp_id]="${startup_v:-0}"
         CM_COMP_WORKSPACE[$comp_repo|$comp_id]="${workspace_v:-0}"
         CM_COMP_STICKY_ON[$comp_repo|$comp_id]="${sticky_v:-0}"
+        # Documents written before the [m] action carry no monitor field; the
+        # repository's own default (e.g. Spotify/Discord on display 1) then
+        # stays in force instead of being reset to "unpinned".
+        if [[ -n "${monitor_v:-}" ]]; then
+          CM_COMP_MONITOR[$comp_repo|$comp_id]="$monitor_v"
+        fi
         # Repository status functions report authoritative live values during
         # discovery. Config JSON stores a snapshot for diff/export purposes;
         # only use it when the repository cannot report a current value.

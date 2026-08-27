@@ -70,9 +70,17 @@ isc_install_core() {
   return "$rc"
 }
 
-# isc_install_menu - Deploy the interactive selection menu engine (optional).
-#   Args: none. Returns: isc_deploy_file status.
-isc_install_menu() { isc_deploy_file component_menu.sh; }
+# isc_install_menu - Deploy the interactive selection menu engine plus the
+#   display-monitor layout helper it uses for the [m] per-application monitor
+#   action (the menu sources monitor_layout.sh from the same directory).
+#   Args: none. Returns: 0 when every file deployed; 1 otherwise.
+isc_install_menu() {
+  local rc=0
+  isc_deploy_file component_menu.sh || rc=1
+  isc_deploy_file monitor_layout.sh || rc=1
+  isc_deploy_file monitor_layout.py || rc=1
+  return "$rc"
+}
 
 # isc_install_runtime - Deploy the per-repository installer runtime (optional).
 #   Args: none. Returns: isc_deploy_file status.
@@ -94,6 +102,8 @@ isc_install_helpers() {
   isc_deploy_file installer_helpers.sh || rc=1
   isc_deploy_file hotkey_capture.sh    || rc=1
   isc_deploy_file hotkey_capture.py    || rc=1
+  isc_deploy_file monitor_layout.sh    || rc=1
+  isc_deploy_file monitor_layout.py    || rc=1
   isc_deploy_file repeatable_fields.py || rc=1
   return "$rc"
 }

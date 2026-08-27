@@ -49,6 +49,72 @@ def test_roundtrip_standalone_state_file():
         assert again["components"]["beta"]["uninstall"] == 1
 
 
+def test_monitor_field_survives_roundtrip():
+    """A [m] monitor pin must survive export -> apply -> export unchanged."""
+    document = {
+        "schema_version": 1,
+        "scope": "standalone",
+        "repo": "demo",
+        "components": {
+            "alpha": {"on": 1, "monitor": 2, "config_value": "Super+A"},
+            "beta": {"on": 1, "monitor": 0},
+        },
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        state = Path(directory) / "state.blob"
+        write_state_file(state, document)
+        roundtrip = export_json(state)
+        assert roundtrip["components"]["alpha"]["monitor"] == 2
+        # The config value must not shift into the monitor column.
+        assert roundtrip["components"]["alpha"]["config_value"] == "Super+A"
+        assert roundtrip["components"]["beta"]["monitor"] == 0
+
+
+def test_legacy_document_without_monitor_stays_unpinned_in_state():
+    """Documents predating [m] must not force a monitor number on apply.
+
+    The state row keeps an empty monitor column, which installation_config.sh
+    translates into "leave the repository's own default alone" instead of
+    resetting Spotify/Discord to unpinned.
+    """
+    document = {
+        "schema_version": 1,
+        "scope": "standalone",
+        "repo": "demo",
+        "components": {"alpha": {"on": 1, "config_value": "Super+A"}},
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        state = Path(directory) / "state.blob"
+        write_state_file(state, document)
+        row = [
+            line
+            for line in state.read_text(encoding="utf-8").splitlines()
+            if line.startswith("comp\t")
+        ][0]
+        fields = row.split("\t")
+        assert fields[9] == ""
+        assert fields[10] == "Super+A"
+        assert "monitor" not in export_json(state)["components"]["alpha"]
+
+
+def test_diff_reports_monitor_change():
+    """Diff output must name a changed monitor assignment."""
+    baseline = {
+        "schema_version": 1,
+        "scope": "standalone",
+        "repo": "demo",
+        "components": {"alpha": {"on": 1, "monitor": 1}},
+    }
+    current = {
+        "schema_version": 1,
+        "scope": "standalone",
+        "repo": "demo",
+        "components": {"alpha": {"on": 1, "monitor": 2}},
+    }
+    changes = diff_documents(baseline, current)
+    assert any("monitor: 1 -> 2" in change for change in changes)
+
+
 def test_diff_detects_changed_field():
     """Diff must name a changed component selection field."""
     baseline = {

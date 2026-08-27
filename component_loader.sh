@@ -166,6 +166,12 @@ isc_load_helpers() {
     # shellcheck source=/dev/null
     source "$dir/hotkey_capture.sh"
   fi
+  # Shared display-monitor discovery (isc_list_monitors) used by installers that
+  # persist per-application monitor placement. Optional for older checkouts.
+  if [[ -f "$dir/monitor_layout.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$dir/monitor_layout.sh"
+  fi
   # Python configurators resolve this path through ISC_REPEATABLE_FIELDS_PY.
   # It is optional for compatibility with older cached framework versions.
   [[ -f "$dir/repeatable_fields.py" ]] && \
