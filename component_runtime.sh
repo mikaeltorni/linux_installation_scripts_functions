@@ -616,15 +616,6 @@ _isc_prepare_selection_state() {
   return 0
 }
 
-# Resolve selected ids from CM_* after config/menu application.
-_isc_selected_from_state() {
-  local repo="${ISC_REPO_NAME:-repo}" id out=""
-  for id in ${CM_COMP_IDS[$repo]:-}; do
-    [[ "${CM_COMP_ON[$repo|$id]:-0}" == "1" ]] && out+="$id "
-  done
-  printf '%s' "${out% }"
-}
-
 # Print usage.
 _isc_usage() {
   cat <<EOF
