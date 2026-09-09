@@ -126,9 +126,9 @@ declare -ga CM_REPOS 2>/dev/null || true
 # Display-monitor layout used by the [m] per-application monitor action.
 # CM_MONITOR_COUNT is 0 until cm_detect_monitors runs (or when the layout
 # cannot be detected), which keeps [m] hidden instead of offering monitors that
-# may not exist. CM_MONITOR_LABELS[n] holds "n: connector (name)" for the menu.
+# may not exist. CM_MONITOR_CONNECTORS[n] holds the connector name for the menu.
 declare -g  CM_MONITOR_COUNT="${CM_MONITOR_COUNT:-0}" 2>/dev/null || true
-declare -gA CM_MONITOR_LABELS CM_MONITOR_CONNECTORS 2>/dev/null || true
+declare -gA CM_MONITOR_CONNECTORS 2>/dev/null || true
 
 ###############################################################################
 # Terminal helpers
@@ -202,7 +202,7 @@ cm_repo_installed_count() {
 # Monitor layout helpers
 ###############################################################################
 
-# Populate CM_MONITOR_COUNT and CM_MONITOR_LABELS from the live display layout.
+# Populate CM_MONITOR_COUNT and CM_MONITOR_CONNECTORS from the live display layout.
 #
 # Sources monitor_layout.sh from the framework directory when isc_list_monitors
 # is not already available. Detection failure is not an error: the count stays 0
@@ -216,7 +216,6 @@ cm_repo_installed_count() {
 cm_detect_monitors() {
   local dir number connector name primary rest rows
   CM_MONITOR_COUNT=0
-  CM_MONITOR_LABELS=()
   CM_MONITOR_CONNECTORS=()
   if ! declare -F isc_list_monitors >/dev/null 2>&1; then
     for dir in "${ISC_COMPONENT_LIB_DIR:-}" \
@@ -238,20 +237,11 @@ cm_detect_monitors() {
   }
   while IFS=$'\t' read -r number connector name primary rest; do
     [[ "$number" =~ ^[0-9]+$ ]] || continue
-    CM_MONITOR_LABELS[$number]="$number: $connector ($name)$([[ "$primary" == "1" ]] && printf ' [primary]')"
     CM_MONITOR_CONNECTORS[$number]="$connector"
     (( number > CM_MONITOR_COUNT )) && CM_MONITOR_COUNT="$number"
   done <<<"$rows"
   isc_log_info "detected $CM_MONITOR_COUNT monitor(s) for the [m] application monitor action"
   (( CM_MONITOR_COUNT > 0 ))
-}
-
-# Echo the menu label for a monitor number ("2: DP-4 (…) [primary]" or "2").
-#
-# Arguments:
-#   $1 - 1-based monitor number.
-cm_monitor_label() {
-  printf '%s' "${CM_MONITOR_LABELS[$1]:-$1}"
 }
 
 ###############################################################################

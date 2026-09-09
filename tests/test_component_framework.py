@@ -912,3 +912,18 @@ component_main --select alpha stray-token
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "RAN alpha" in result.stdout
+
+
+def test_unused_monitor_label_helper_is_gone():
+    """Menu render uses connector names; the unused label accessor must stay gone."""
+    menu = (REPO / "component_menu.sh").read_text(encoding="utf-8")
+    assert "cm_monitor_label()" not in menu
+    assert "CM_MONITOR_LABELS" not in menu
+    assert "CM_MONITOR_CONNECTORS" in menu
+
+
+def test_unused_selected_from_state_helper_is_gone():
+    """Selection is resolved by component_main; the unused helper must stay gone."""
+    runtime = (REPO / "component_runtime.sh").read_text(encoding="utf-8")
+    assert "_isc_selected_from_state()" not in runtime
+    assert "isc_route_readonly_args()" in runtime
