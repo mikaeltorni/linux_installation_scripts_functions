@@ -32,6 +32,7 @@ CORE_FILES = (
     "component_logging.sh",
     "logging_utils.py",
     "safe_system_action.sh",
+    "tmux_background_output.py",
 )
 OPTIONAL_FILES = {
     "menu": "component_menu.sh",

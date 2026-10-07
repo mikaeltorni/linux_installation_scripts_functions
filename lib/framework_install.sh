@@ -57,16 +57,19 @@ isc_deploy_file() {
 # isc_install_core - Deploy the non-optional core: the bootstrap loader and the
 #   logging helpers. install.sh runs this unconditionally (before any optional
 #   component) so the framework core is always present regardless of selection.
-#   Args: none. Returns: 0 when every core file deployed; 1 otherwise.
+#   Parameters: none. Returns: 0 when every core file deployed; 1 otherwise.
 isc_install_core() {
+  printf 'parameters=none\n'
   msg "[$ISC_REPO_NAME] Installing core (loader + logging) to $ISC_INSTALL_DIR"
   run_as_target mkdir -p "$ISC_INSTALL_DIR"
   local rc=0
   isc_deploy_file component_loader.sh  || rc=1
   isc_deploy_file component_logging.sh || rc=1
   isc_deploy_file logging_utils.py     || rc=1
+  isc_deploy_file tmux_background_output.py || rc=1
   isc_deploy_file safe_system_action.sh || rc=1
   run_as_target chmod 0755 "$ISC_INSTALL_DIR/safe_system_action.sh" || rc=1
+  printf '%s\n' "$rc"
   return "$rc"
 }
 
