@@ -70,10 +70,9 @@ ISC_FUNCTIONS_RAW="${ISC_FUNCTIONS_RAW:-https://raw.githubusercontent.com/mikael
 # and component_runtime.sh, downloading them into a cache directory when no
 # local checkout is available.
 #
-# Returns:
-#   0 and prints the directory on success; non-zero when the library could not
-#   be located or downloaded.
+# Parameters: none. Returns: directory on success; nonzero on failure.
 isc_component_lib_dir() {
+  printf 'parameters=none\n' >&2
   local d cache f
   for d in \
       "${ISC_COMPONENT_LIB_DIR:-}" \
@@ -84,31 +83,34 @@ isc_component_lib_dir() {
     [[ -n "$d" && -f "$d/component_runtime.sh" && -f "$d/component_menu.sh" ]] || continue
     isc_log_debug "resolved component library from local checkout: $d"
     ( cd "$d" && pwd )
+    printf '0\n' >&2
     return 0
   done
 
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/installation_scripts/components"
-  mkdir -p "$cache" 2>/dev/null || { isc_log_error "cannot create cache dir: $cache"; return 1; }
+  mkdir -p "$cache" 2>/dev/null || { isc_log_error "cannot create cache dir: $cache"; printf '1\n' >&2; return 1; }
   # Logging, installer helpers, and repeatable_fields.py are downloaded opportunistically
   # (they are not part of the existence gate above) so older checkouts without
   # them still resolve.
-  for f in component_logging.sh installer_helpers.sh safe_system_action.sh repeatable_fields.py installation_config.py installation_config.sh component_menu.sh component_runtime.sh; do
+  for f in component_logging.sh installer_helpers.sh safe_system_action.sh tmux_background_output.py repeatable_fields.py installation_config.py installation_config.sh component_menu.sh component_runtime.sh; do
     if [[ ! -f "$cache/$f" || "${ISC_FUNCTIONS_REFRESH:-0}" == "1" ]]; then
       isc_log_debug "downloading $f from $ISC_FUNCTIONS_RAW"
       if command -v curl >/dev/null 2>&1; then
         curl -fsSL "$ISC_FUNCTIONS_RAW/$f" -o "$cache/$f" \
-          || { isc_log_error "curl failed for $f"; return 1; }
+          || { isc_log_error "curl failed for $f"; printf '1\n' >&2; return 1; }
       elif command -v wget >/dev/null 2>&1; then
         wget -qO "$cache/$f" "$ISC_FUNCTIONS_RAW/$f" \
-          || { isc_log_error "wget failed for $f"; return 1; }
+          || { isc_log_error "wget failed for $f"; printf '1\n' >&2; return 1; }
       else
         isc_log_error "neither curl nor wget available to download $f"
+        printf '1\n' >&2
         return 1
       fi
     fi
   done
   isc_log_debug "resolved component library from download cache: $cache"
   printf '%s' "$cache"
+  printf '0\n' >&2
 }
 
 # isc_activate_components - resolve the framework and source component_runtime.sh
