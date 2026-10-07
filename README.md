@@ -48,6 +48,33 @@ master menu discover the same nested screens without sourcing child internals.
 | `installer/components.sh` | This repository's optional-module manifest consumed by the shared runtime. |
 | `lib/framework_install.sh` | The deploy functions (`isc_install_core` and one per optional module) invoked by `install.sh`. |
 
+## Background terminal output preservation
+
+The core-installed `tmux_background_output.py` preserves background diagnostics
+without unlimited tmux memory growth. ACC and Phrase Automation installers copy
+it to `~/.local/bin/tmux-background-output`. Python 3's standard library and tmux
+are its runtime dependencies.
+
+```sh
+python3 tmux_background_output.py start --target demo:monitor \
+  --archive-dir "$HOME/.local/state/demo/scrollback" --cwd "$HOME/projects/demo" \
+  -- bash monitor.sh
+python3 tmux_background_output.py record --file output.gz < console-output.txt
+gzip -cd "$HOME/.local/state/demo/scrollback/"*.gz | less -R
+python3 -m unittest discover -s tests -p test_tmux_background_output.py
+```
+
+`start` requires an existing session and a dedicated single-pane background
+window (created if missing). It snapshots existing scrollback, attaches a raw
+output recorder, and starts the supplied command in a 2,000-line grid. A larger
+old grid is replaced only after preservation; an already bounded pane keeps its
+ID. Other windows and global history settings are untouched. `--cwd` is optional.
+`record` appends stdin bytes as independently finalized gzip members, limiting
+its working buffer to 64 KiB and keeping previous members readable after a
+recorder interruption. Archive filenames are unique, files are private, and no
+retention limit deletes old diagnostics. Snapshot/live archives may overlap.
+Archives grow on disk; previously discarded tmux rows cannot be recovered.
+
 ## Installing this repository as modules
 
 Like every other repository in the chain, this one ships a component-based
