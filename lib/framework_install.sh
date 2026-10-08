@@ -108,7 +108,31 @@ isc_install_helpers() {
   isc_deploy_file monitor_layout.sh    || rc=1
   isc_deploy_file monitor_layout.py    || rc=1
   isc_deploy_file repeatable_fields.py || rc=1
+  isc_install_repeatable_fields_bin || rc=1
   return "$rc"
+}
+
+# Build and publish the repeatable-fields command when cargo is available.
+# Test installs override ISC_INSTALL_DIR, so they keep the Python module and
+# do not write the user bin directory. The build stays outside run_as_target
+# because that helper points HOME at the target home and hides rustup.
+isc_install_repeatable_fields_bin() {
+  local default_dir cargo_bin cargo_home rustup_home built bin_dir
+  default_dir="${XDG_CACHE_HOME:-$TARGET_HOME/.cache}/installation_scripts/components"
+  [ "$ISC_INSTALL_DIR" = "$default_dir" ] || return 0
+  command -v cargo >/dev/null 2>&1 || return 0
+  cargo_bin="$(command -v cargo)"
+  cargo_home="$(cd "$(dirname "$cargo_bin")/.." && pwd)"
+  rustup_home="$(dirname "$cargo_home")/.rustup"
+  env CARGO_HOME="${CARGO_HOME:-$cargo_home}" RUSTUP_HOME="${RUSTUP_HOME:-$rustup_home}" \
+    cargo build --manifest-path "$SCRIPT_DIR/Cargo.toml" --locked --release || return 1
+  built="$SCRIPT_DIR/target/release/repeatable-fields"
+  [ -x "$built" ] || return 1
+  mkdir -p "$SCRIPT_DIR/dist"
+  install -m 0755 "$built" "$SCRIPT_DIR/dist/repeatable-fields"
+  bin_dir="$TARGET_HOME/.local/bin"
+  run_as_target mkdir -p "$bin_dir"
+  run_as_target install -m 0755 "$built" "$bin_dir/repeatable-fields"
 }
 
 # isc_install_summary - Report where the framework was installed and how

@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .cache/
 .log/
+target/
+dist/
 
 # BEGIN programming-prompts-cursor (managed by linux_programming_setup)
 # Managed copies from programming_prompts — do not ignore other .cursor/skills/*
