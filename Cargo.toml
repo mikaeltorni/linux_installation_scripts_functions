@@ -17,5 +17,9 @@ path = "src/bin/installation-config.rs"
 name = "monitor-layout"
 path = "src/bin/monitor-layout.rs"
 
+[[bin]]
+name = "tmux-background-output"
+path = "src/bin/tmux-background-output.rs"
+
 [dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }
