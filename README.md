@@ -36,6 +36,8 @@ printf '%s' '{"commands":[["add",{"source":"first"}],["set",1,"env","USE_FIRST"]
 
 `installation-config` reads and writes the shared installation JSON. Its commands are `export --state-file PATH [--output PATH]`, `apply --config PATH --state-file PATH`, `diff --baseline PATH --current PATH`, and `roundtrip --state-file PATH`. `export` prints sorted JSON. `apply` writes the tab-separated state file. `diff` prints one change per line. `roundtrip` exits 0 when export and apply reproduce the same document. `is-empty`, `scope`, `repo-enabled`, and `component-ids` answer the installer's selection questions.
 
+`hotkey-capture` converts and stores accelerator fields. Its commands are `accel`, `display`, `modifier`, `add-modifier`, `config-get`, and `config-set`. `hotkey-capture accel super+shift+s` prints `<Super><Shift>s`. Interactive press-to-capture remains the Python engine.
+
 Component manifests may use a tenth `monitor` field (`1`-`9`, or `-` for none)
 declaring the display monitor an application should open on. The shared submenu
 shows `[m] monitor` for those rows and cycles the assignment `none → 1 → … → N`

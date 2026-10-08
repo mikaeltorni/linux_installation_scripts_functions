@@ -21,5 +21,9 @@ path = "src/bin/monitor-layout.rs"
 name = "tmux-background-output"
 path = "src/bin/tmux-background-output.rs"
 
+[[bin]]
+name = "hotkey-capture"
+path = "src/bin/hotkey-capture.rs"
+
 [dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }
