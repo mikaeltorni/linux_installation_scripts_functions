@@ -26,7 +26,13 @@ See the full cross-repository map in
 | `component_menu.sh` | Pure-Bash TUI engine: a two-level selection menu (repository rows with enable/disable, per-repository component submenus, and live `on/total` counts). No external dependencies. |
 | `component_runtime.sh` | The per-repository installer contract: `--list-components`, `--select id,…`, `--default`, `--all`, an interactive submenu, and optional `ISC_CORE` / `ISC_PREFLIGHT` / `ISC_POSTFLIGHT` hooks. |
 | `monitor_layout.sh` / `monitor_layout.py` | Shared display-monitor discovery. `isc_list_monitors` prints `number<TAB>connector<TAB>name<TAB>primary<TAB>x<TAB>y<TAB>width<TAB>height` per monitor, numbered exactly like the GNOME Settings → Displays panel (the Mutter `DisplayConfig` order), so installers, menus, and Shell extensions all agree on what "monitor 2" means. `ISC_MONITOR_LIST` overrides detection for headless runs and tests. |
-| `repeatable_fields.py` | Shared one-based row mutations for repository-owned configurators that add repeated values and edit boolean/group metadata. `isc_load_helpers` exports its installed path as `ISC_REPEATABLE_FIELDS_PY`. |
+| `repeatable_fields.py` / `repeatable-fields` | Shared one-based row mutations for repository-owned configurators that add repeated values and edit boolean/group metadata. `isc_load_helpers` exports the Python module path as `ISC_REPEATABLE_FIELDS_PY`. The `repeatable-fields` command reads a JSON command script on stdin and prints `results` and `items`. |
+
+```sh
+printf '%s' '{"commands":[["add",{"source":"first"}],["set",1,"env","USE_FIRST"],["toggle",1,"startup"],["set-group",1,3]]}' | repeatable-fields
+```
+
+`add` returns the new one-based row number. `set`, `toggle`, and `set-group` return true or false. A negative group exits 1 and prints `group must be zero or greater`.
 
 Component manifests may use a tenth `monitor` field (`1`-`9`, or `-` for none)
 declaring the display monitor an application should open on. The shared submenu
