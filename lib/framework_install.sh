@@ -128,15 +128,19 @@ isc_install_repeatable_fields_bin() {
     cargo build --manifest-path "$SCRIPT_DIR/Cargo.toml" --locked --release || return 1
   built="$SCRIPT_DIR/target/release/repeatable-fields"
   local config_bin="$SCRIPT_DIR/target/release/installation-config"
+  local monitor_bin="$SCRIPT_DIR/target/release/monitor-layout"
   [ -x "$built" ] || return 1
   [ -x "$config_bin" ] || return 1
+  [ -x "$monitor_bin" ] || return 1
   mkdir -p "$SCRIPT_DIR/dist"
   install -m 0755 "$built" "$SCRIPT_DIR/dist/repeatable-fields"
   install -m 0755 "$config_bin" "$SCRIPT_DIR/dist/installation-config"
+  install -m 0755 "$monitor_bin" "$SCRIPT_DIR/dist/monitor-layout"
   bin_dir="$TARGET_HOME/.local/bin"
   run_as_target mkdir -p "$bin_dir"
   run_as_target install -m 0755 "$built" "$bin_dir/repeatable-fields"
   run_as_target install -m 0755 "$config_bin" "$bin_dir/installation-config"
+  run_as_target install -m 0755 "$monitor_bin" "$bin_dir/monitor-layout"
 }
 
 # isc_install_summary - Report where the framework was installed and how

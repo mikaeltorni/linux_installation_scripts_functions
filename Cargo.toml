@@ -13,5 +13,9 @@ path = "src/main.rs"
 name = "installation-config"
 path = "src/bin/installation-config.rs"
 
+[[bin]]
+name = "monitor-layout"
+path = "src/bin/monitor-layout.rs"
+
 [dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }
