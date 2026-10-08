@@ -235,7 +235,11 @@ isc_config_export_json() {
 # isc_config_is_explicit_empty - return 0 when the JSON document means "no selection".
 # Arguments: $1 json path.
 isc_config_is_explicit_empty() {
-  local json="$1"
+  local json="$1" bin
+  if bin="$(isc_config_bin)"; then
+    "$bin" is-empty --config "$json" >/dev/null 2>&1
+    return $?
+  fi
   python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); scope=d.get("scope","standalone"); empty=(not (d.get("repos") or {}) if scope=="master" else not (d.get("components") or {})); sys.exit(0 if empty else 1)' "$json" 2>/dev/null
 }
 
@@ -243,15 +247,28 @@ isc_config_is_explicit_empty() {
 # Populated configs (default.json, custom saves) leave unspecified entries unchanged.
 # Arguments: $1 json path.
 isc_config_finalize_apply() {
-  local json="$1" repo id scope comps
+  local json="$1" repo id scope comps bin enabled
   isc_config_is_explicit_empty "$json" || return 0
-  scope="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("scope","standalone"))' "$json" 2>/dev/null || echo standalone)"
+  if bin="$(isc_config_bin)"; then
+    scope="$("$bin" scope --config "$json" 2>/dev/null || echo standalone)"
+  else
+    scope="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("scope","standalone"))' "$json" 2>/dev/null || echo standalone)"
+  fi
   if [[ "$scope" == "master" ]]; then
     for repo in "${CM_REPOS[@]}"; do
-      if ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=sys.argv[2]; print(1 if (d.get("repos") or {}).get(r, {}).get("enabled") else 0)' "$json" "$repo" 2>/dev/null | grep -q '^1$'; then
+      if bin="$(isc_config_bin)"; then
+        enabled="$("$bin" repo-enabled --config "$json" --repo "$repo" 2>/dev/null || echo 0)"
+      else
+        enabled="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=sys.argv[2]; print(1 if (d.get("repos") or {}).get(r, {}).get("enabled") else 0)' "$json" "$repo" 2>/dev/null || echo 0)"
+      fi
+      if [[ "$enabled" != "1" ]]; then
         CM_REPO_ENABLED[$repo]=0
       fi
-      comps="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=sys.argv[2]; print(" ".join((d.get("repos") or {}).get(r, {}).get("components") or {}))' "$json" "$repo" 2>/dev/null || true)"
+      if bin="$(isc_config_bin)"; then
+        comps="$("$bin" component-ids --config "$json" --repo "$repo" 2>/dev/null || true)"
+      else
+        comps="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=sys.argv[2]; print(" ".join((d.get("repos") or {}).get(r, {}).get("components") or {}))' "$json" "$repo" 2>/dev/null || true)"
+      fi
       for id in ${CM_COMP_IDS[$repo]:-}; do
         if [[ " $comps " != *" $id "* ]]; then
           CM_COMP_ON[$repo|$id]=0
@@ -261,7 +278,11 @@ isc_config_finalize_apply() {
     done
   else
     local repo_name="${ISC_REPO_NAME:-${CM_REPOS[0]:-}}"
-    comps="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(" ".join((d.get("components") or {})))' "$json" 2>/dev/null || true)"
+    if bin="$(isc_config_bin)"; then
+      comps="$("$bin" component-ids --config "$json" 2>/dev/null || true)"
+    else
+      comps="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(" ".join((d.get("components") or {})))' "$json" 2>/dev/null || true)"
+    fi
     for id in ${CM_COMP_IDS[$repo_name]:-}; do
       if [[ " $comps " != *" $id "* ]]; then
         CM_COMP_ON[$repo_name|$id]=0

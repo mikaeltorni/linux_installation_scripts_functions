@@ -55,6 +55,28 @@ pub fn diff_documents(baseline: &Value, current: &Value) -> Vec<String> {
     changes
 }
 
+pub fn is_explicit_empty(document: &Value) -> bool {
+    let scope = scope_name(document);
+    if scope == "master" { object_field(document, "repos").is_empty() } else { object_field(document, "components").is_empty() }
+}
+
+pub fn scope_name(document: &Value) -> String {
+    let scope = text_field(document, "scope");
+    if scope.is_empty() { "standalone".into() } else { scope }
+}
+
+pub fn repo_enabled(document: &Value, repo: &str) -> i64 {
+    flag_int(document.get("repos").and_then(|repos| repos.get(repo)).and_then(|entry| entry.get("enabled")))
+}
+
+pub fn component_ids(document: &Value, repo: Option<&str>) -> Vec<String> {
+    if scope_name(document) == "master" {
+        let Some(repo) = repo else { return Vec::new() };
+        return object_of(document.get("repos").and_then(|repos| repos.get(repo)).unwrap_or(&Value::Null), "components").keys().cloned().collect();
+    }
+    object_field(document, "components").keys().cloned().collect()
+}
+
 pub fn dumps(value: &Value) -> String {
     format!("{}\n", dump_value(value, 0))
 }
