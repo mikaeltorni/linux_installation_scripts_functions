@@ -34,7 +34,7 @@ printf '%s' '{"commands":[["add",{"source":"first"}],["set",1,"env","USE_FIRST"]
 
 `add` returns the new one-based row number. `set`, `toggle`, and `set-group` return true or false. A negative group exits 1 and prints `group must be zero or greater`.
 
-`installation-config` reads and writes the shared installation JSON. Its commands are `export --state-file PATH [--output PATH]`, `apply --config PATH --state-file PATH`, `diff --baseline PATH --current PATH`, and `roundtrip --state-file PATH`. `export` prints sorted JSON. `apply` writes the tab-separated state file. `diff` prints one change per line. `roundtrip` exits 0 when export and apply reproduce the same document.
+`installation-config` reads and writes the shared installation JSON. Its commands are `export --state-file PATH [--output PATH]`, `apply --config PATH --state-file PATH`, `diff --baseline PATH --current PATH`, and `roundtrip --state-file PATH`. `export` prints sorted JSON. `apply` writes the tab-separated state file. `diff` prints one change per line. `roundtrip` exits 0 when export and apply reproduce the same document. `is-empty`, `scope`, `repo-enabled`, and `component-ids` answer the installer's selection questions.
 
 Component manifests may use a tenth `monitor` field (`1`-`9`, or `-` for none)
 declaring the display monitor an application should open on. The shared submenu
