@@ -70,8 +70,28 @@ isc_config_resolve() {
   printf '%s/%s' "$(isc_config_dir)" "$name"
 }
 
-# isc_config_python - run installation_config.py with arguments.
+# isc_config_bin - the Rust installation-config command, when this checkout built it.
+isc_config_bin() {
+  local here bin
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  command -v cargo >/dev/null 2>&1 || return 1
+  for bin in "$here/target/release/installation-config" "$here/dist/installation-config"; do
+    if [[ -x "$bin" ]]; then
+      printf '%s\n' "$bin"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# isc_config_python - run installation config export/apply/diff/roundtrip.
+# Cargo uses the release binary. A PATH without cargo keeps the Python module.
 isc_config_python() {
+  local bin
+  if bin="$(isc_config_bin)"; then
+    "$bin" "$@"
+    return $?
+  fi
   isc_config_activate || return 1
   python3 "$ISC_CONFIG_PY" "$@"
 }
