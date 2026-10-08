@@ -9,5 +9,9 @@ publish = false
 name = "repeatable-fields"
 path = "src/main.rs"
 
+[[bin]]
+name = "installation-config"
+path = "src/bin/installation-config.rs"
+
 [dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }
