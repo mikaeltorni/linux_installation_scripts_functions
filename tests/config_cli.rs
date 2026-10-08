@@ -35,6 +35,15 @@ fn export_apply_diff_and_roundtrip_match_python() {
     let diff = bin().args(["diff", "--baseline", base.to_str().unwrap(), "--current", curr.to_str().unwrap()]).output().unwrap();
     assert_eq!(diff.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&diff.stdout), "demo/alpha selected: 1 -> 0\ndemo/alpha monitor: 1 -> 2\ndemo/alpha config_value: '' -> 'Super+B'\n");
+    let empty = write(&dir, "empty.json", "{\"components\": {}, \"schema_version\": 1, \"scope\": \"standalone\"}\n");
+    let empty_status = bin().args(["is-empty", "--config", empty.to_str().unwrap()]).status().unwrap();
+    assert_eq!(empty_status.code(), Some(0));
+    let populated = bin().args(["is-empty", "--config", base.to_str().unwrap()]).status().unwrap();
+    assert_eq!(populated.code(), Some(1));
+    let scope = bin().args(["scope", "--config", empty.to_str().unwrap()]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&scope.stdout), "standalone\n");
+    let ids = bin().args(["component-ids", "--config", base.to_str().unwrap()]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&ids.stdout).trim(), "alpha");
     let roundtrip = bin().args(["roundtrip", "--state-file", state_path.to_str().unwrap()]).output().unwrap();
     assert_eq!(roundtrip.status.code(), Some(0), "{}", String::from_utf8_lossy(&roundtrip.stderr));
     let _ = fs::remove_dir_all(dir);

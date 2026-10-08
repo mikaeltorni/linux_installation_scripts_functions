@@ -48,6 +48,26 @@ fn run(args: &[String]) -> Result<u8, String> {
             }
             Ok(0)
         }
+        "is-empty" => {
+            let document = config::load_document(Path::new(&required(args, "--config")?))?;
+            Ok(if config::is_explicit_empty(&document) { 0 } else { 1 })
+        }
+        "scope" => {
+            let document = config::load_document(Path::new(&required(args, "--config")?))?;
+            println!("{}", config::scope_name(&document));
+            Ok(0)
+        }
+        "repo-enabled" => {
+            let document = config::load_document(Path::new(&required(args, "--config")?))?;
+            println!("{}", config::repo_enabled(&document, &required(args, "--repo")?));
+            Ok(0)
+        }
+        "component-ids" => {
+            let document = config::load_document(Path::new(&required(args, "--config")?))?;
+            let repo = optional(args, "--repo");
+            println!("{}", config::component_ids(&document, repo.as_deref()).join(" "));
+            Ok(0)
+        }
         "roundtrip" => {
             let state = required(args, "--state-file")?;
             let path = Path::new(&state);
@@ -57,7 +77,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             let roundtrip = config::export_state(&applied)?;
             if document != roundtrip { Ok(1) } else { Ok(0) }
         }
-        _ => Err("usage: installation-config export|apply|diff|roundtrip".into()),
+        _ => Err("usage: installation-config export|apply|diff|roundtrip|is-empty|scope|repo-enabled|component-ids".into()),
     }
 }
 
