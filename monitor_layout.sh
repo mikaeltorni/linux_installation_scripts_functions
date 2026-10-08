@@ -50,7 +50,20 @@ isc_list_monitors() {
     declare -F isc_log_warn >/dev/null 2>&1 && isc_log_warn "monitor_layout.py not found; monitor detection disabled"
     return 1
   }
-  if declare -F run_as_target >/dev/null 2>&1; then
+  local bin=""
+  if command -v cargo >/dev/null 2>&1; then
+    local candidate
+    for candidate in "$dir/target/release/monitor-layout" "$dir/dist/monitor-layout"; do
+      [[ -x "$candidate" ]] && bin="$candidate" && break
+    done
+  fi
+  if [[ -n "$bin" ]]; then
+    if declare -F run_as_target >/dev/null 2>&1; then
+      output="$(run_as_target "$bin" list 2>/dev/null || true)"
+    else
+      output="$("$bin" list 2>/dev/null || true)"
+    fi
+  elif declare -F run_as_target >/dev/null 2>&1; then
     output="$(run_as_target python3 "$dir/monitor_layout.py" list 2>/dev/null || true)"
   else
     output="$(python3 "$dir/monitor_layout.py" list 2>/dev/null || true)"
