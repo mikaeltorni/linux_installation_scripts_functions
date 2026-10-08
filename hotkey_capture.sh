@@ -39,6 +39,28 @@ isc_hotkey_lib_dir() {
   return 1
 }
 
+# isc_hotkey_bin DIR - print the Rust hotkey-capture path when cargo built it.
+isc_hotkey_bin() {
+  local dir="$1" candidate
+  command -v cargo >/dev/null 2>&1 || return 1
+  for candidate in "$dir/target/release/hotkey-capture" "$dir/dist/hotkey-capture"; do
+    [[ -x "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
+  done
+  return 1
+}
+
+# isc_hotkey_run DIR ARGS... - use the Rust command for accelerator fields.
+# Interactive capture stays on the Python engine.
+isc_hotkey_run() {
+  local dir="$1" bin
+  shift
+  if bin="$(isc_hotkey_bin "$dir")"; then
+    "$bin" "$@"
+  else
+    python3 "$dir/hotkey_capture.py" "$@"
+  fi
+}
+
 # isc_hotkey_to_accelerator - convert a friendly spec to a GTK accelerator.
 # Passes GTK-form specs (already containing "<") through unchanged.
 # Arguments: $1 - friendly ("super+shift+s") or GTK ("<Super><Shift>s") spec.
@@ -47,7 +69,7 @@ isc_hotkey_to_accelerator() {
   local spec="$1" dir
   [[ "$spec" == *"<"* ]] && { printf '%s\n' "$spec"; return 0; }
   dir="$(isc_hotkey_lib_dir)" || { printf '%s\n' "$spec"; return 0; }
-  python3 "$dir/hotkey_capture.py" accel "$spec"
+  isc_hotkey_run "$dir" accel "$spec"
 }
 
 # isc_hotkey_add_modifier ACCELERATOR MODIFIER - print the derived accelerator;
@@ -55,14 +77,14 @@ isc_hotkey_to_accelerator() {
 isc_hotkey_add_modifier() {
   local accelerator="$1" modifier="$2" dir
   dir="$(isc_hotkey_lib_dir)" || return 1
-  python3 "$dir/hotkey_capture.py" add-modifier "$accelerator" "$modifier"
+  isc_hotkey_run "$dir" add-modifier "$accelerator" "$modifier"
 }
 
 # isc_normalize_modifier VALUE - validate and print exactly one modifier.
 isc_normalize_modifier() {
   local value="$1" dir
   dir="$(isc_hotkey_lib_dir)" || return 1
-  python3 "$dir/hotkey_capture.py" modifier "$value"
+  isc_hotkey_run "$dir" modifier "$value"
 }
 
 # isc_hotkey_field_value CONFIG KEY DEFAULT - resolve env override, persisted
@@ -74,7 +96,7 @@ isc_hotkey_field_value() {
     return 0
   fi
   dir="$(isc_hotkey_lib_dir)" || { printf '%s\n' "$default_value"; return 0; }
-  python3 "$dir/hotkey_capture.py" config-get "$config" "$key" "$default_value"
+  isc_hotkey_run "$dir" config-get "$config" "$key" "$default_value"
 }
 
 # isc_hotkey_field_status CONFIG KEY DEFAULT - print the current friendly
@@ -83,7 +105,7 @@ isc_hotkey_field_status() {
   local config="$1" key="$2" default_value="$3" dir value
   dir="$(isc_hotkey_lib_dir)" || return 1
   value="$(isc_hotkey_field_value "$config" "$key" "$default_value")"
-  python3 "$dir/hotkey_capture.py" display "$value"
+  isc_hotkey_run "$dir" display "$value"
 }
 
 # isc_modifier_field_status CONFIG KEY DEFAULT - print one current modifier in
@@ -92,19 +114,23 @@ isc_modifier_field_status() {
   local config="$1" key="$2" default_value="$3" dir value normalized
   dir="$(isc_hotkey_lib_dir)" || return 1
   value="$(isc_hotkey_field_value "$config" "$key" "$default_value")"
-  normalized="$(python3 "$dir/hotkey_capture.py" modifier "$value")" || return 1
+  normalized="$(isc_hotkey_run "$dir" modifier "$value")" || return 1
   [[ "$normalized" == "Control" ]] && printf 'Ctrl\n' || printf '%s\n' "$normalized"
 }
 
 # _isc_save_hotkey_field CONFIG KEY VALUE - persist a validated field as the
 # target user so sudo-launched standalone configurators never create root files.
 _isc_save_hotkey_field() {
-  local config="$1" key="$2" value="$3" dir
+  local config="$1" key="$2" value="$3" dir bin
   dir="$(isc_hotkey_lib_dir)" || return 1
   if declare -F run_as_target >/dev/null 2>&1; then
-    run_as_target python3 "$dir/hotkey_capture.py" config-set "$config" "$key" "$value"
+    if bin="$(isc_hotkey_bin "$dir")"; then
+      run_as_target "$bin" config-set "$config" "$key" "$value"
+    else
+      run_as_target python3 "$dir/hotkey_capture.py" config-set "$config" "$key" "$value"
+    fi
   else
-    python3 "$dir/hotkey_capture.py" config-set "$config" "$key" "$value"
+    isc_hotkey_run "$dir" config-set "$config" "$key" "$value"
   fi
 }
 
@@ -123,7 +149,7 @@ isc_prompt_hotkey_field() {
     [[ -z "$captured" ]] && return 0
     if [[ "$captured" == *"<"* ]]; then
       normalized="$captured"
-    elif ! normalized="$(python3 "$dir/hotkey_capture.py" accel "$captured" 2>&1)"; then
+    elif ! normalized="$(isc_hotkey_run "$dir" accel "$captured" 2>&1)"; then
       printf '  Invalid hotkey: %s\n' "${normalized#Invalid hotkey: }" >&2
       continue
     fi
@@ -131,7 +157,7 @@ isc_prompt_hotkey_field() {
       continue
     fi
     _isc_save_hotkey_field "$config" "$key" "$normalized" || return 1
-    printf '%s\n' "$(python3 "$dir/hotkey_capture.py" display "$normalized")"
+    printf '%s\n' "$(isc_hotkey_run "$dir" display "$normalized")"
     return 0
   done
 }
@@ -147,7 +173,7 @@ isc_prompt_modifier_field() {
     captured="$(python3 "$dir/hotkey_capture.py" prompt-capture \
       --label "$label" --current "$current" --modifier-only --show-box)" || return 1
     [[ -z "$captured" ]] && return 0
-    if ! normalized="$(python3 "$dir/hotkey_capture.py" modifier "$captured" 2>&1)"; then
+    if ! normalized="$(isc_hotkey_run "$dir" modifier "$captured" 2>&1)"; then
       printf '  Invalid modifier: %s\n' "${normalized#Invalid modifier: }" >&2
       continue
     fi
