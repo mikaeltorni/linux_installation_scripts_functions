@@ -58,10 +58,12 @@ master menu discover the same nested screens without sourcing child internals.
 
 ## Background terminal output preservation
 
-The core-installed `tmux_background_output.py` preserves background diagnostics
-without unlimited tmux memory growth. ACC and Phrase Automation installers copy
-it to `~/.local/bin/tmux-background-output`. Python 3's standard library and tmux
-are its runtime dependencies.
+The `tmux-background-output` command preserves background diagnostics without
+unlimited tmux memory growth. Its commands are `record --file FILE` and
+`start --target SESSION:WINDOW --archive-dir DIR [--cwd DIR] -- COMMAND`.
+`record` appends gzip members from stdin and prints nothing. `start` bounds
+the window history to 2000 lines and archives the previous pane output.
+The Python module remains for callers that import the file directly.
 
 ```sh
 python3 tmux_background_output.py start --target demo:monitor \
