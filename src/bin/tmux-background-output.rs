@@ -15,9 +15,16 @@ fn main() -> ExitCode {
     }
 }
 
+/// Dispatch validated commands to the shared operation owner.
+/// Parameters: args - raw command-line arguments.
+/// Returns: success or command failure.
 fn run(args: &[String]) -> Result<(), String> {
-    match background::parse(args)? {
+    eprintln!("args={args:?}");
+    let result = match background::parse(args)? {
         Parsed::Record { file } => background::record(&file, io::stdin()),
         Parsed::Start(request) => background::start(&request),
-    }
+        Parsed::Prune { directory } => background::prune(&directory),
+    };
+    eprintln!("{result:?}");
+    result
 }

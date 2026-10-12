@@ -3,20 +3,31 @@
 
 start --target SESSION:WINDOW --archive-dir DIR [--cwd DIR] -- COMMAND...
 record --file FILE reads raw console bytes from stdin (used by pipe-pane).
+prune --archive-dir DIR bounds existing recorder archives without touching tmux.
 Read archives with: gzip -cd DIR/*.gz | less -R
 """
 
 import argparse
 from datetime import datetime, timezone
 import gzip
+import fcntl
 import os
 from pathlib import Path
 import shlex
+import re
+import tempfile
+import time
+import zlib
 import subprocess
 import sys
 import uuid
 
 HISTORY_LIMIT = 2000
+SEGMENT_BYTES = 8 * 1024 * 1024
+DIRECTORY_BYTES = 256 * 1024 * 1024
+ARCHIVE_COUNT = 64
+ARCHIVE_AGE = 7 * 86400
+ARCHIVE_NAME = re.compile(r"^\d{8}T\d{6}\.\d{6}Z(?:-[0-9a-f]{8})?-(?:output|snapshot)\.gz$")
 
 
 def parse_command(argv):
@@ -30,6 +41,8 @@ def parse_command(argv):
     commands = parser.add_subparsers(dest="operation", required=True)
     record = commands.add_parser("record")
     record.add_argument("--file", required=True, type=Path)
+    prune = commands.add_parser("prune")
+    prune.add_argument("--archive-dir", required=True, type=Path)
     start = commands.add_parser("start")
     start.add_argument("--target", required=True)
     start.add_argument("--archive-dir", required=True, type=Path)
@@ -48,25 +61,127 @@ def parse_command(argv):
     return args
 
 
-def record_stream(stream, path):
-    """Append complete gzip members without accumulating console history.
+def lock_directory(directory):
+    """Serialize archive writes and retention across all recorders.
 
-    Parameters: stream - binary input stream; path - output archive path.
+    Parameters: directory - parent archive directory.
+    Returns: open locked file handle, released on close.
+    """
+    print(f"directory={directory}")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor = os.open(directory / ".retention.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    lock = os.fdopen(descriptor, "rb")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    print(lock)
+    return lock
+
+
+def trim_legacy_archive(path):
+    """Keep only complete recent members from an oversized legacy gzip file.
+
+    Parameters: path - oversized recorder archive, with its directory locked.
+    Returns: None.
+    """
+    print(f"path={path}")
+    with path.open("rb") as source:
+        source.seek(-SEGMENT_BYTES, os.SEEK_END)
+        tail = source.read(SEGMENT_BYTES)
+    header = b"\x1f\x8b\x08\x00\x00\x00\x00\x00"
+    start = tail.find(header)
+    end = start
+    # Recorder members contain at most 64 KiB; validate CRCs and finalization
+    # with bounded inflation. Ignore an interrupted final member.
+    while start >= 0 and end < len(tail):
+        inflater = zlib.decompressobj(31)
+        try:
+            inflater.decompress(tail[end:], 65537)
+        except zlib.error:
+            if end != start:
+                break
+            start = tail.find(header, start + 1)
+            end = start
+            continue
+        if not inflater.eof:
+            break
+        end = len(tail) - len(inflater.unused_data)
+    retained = tail[start:end] if start >= 0 and end > start else gzip.compress(b"", compresslevel=1, mtime=0)
+    stamp = path.stat().st_mtime_ns
+    descriptor, temporary = tempfile.mkstemp(prefix=".retention-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(retained)
+        os.utime(temporary, ns=(stamp, stamp))
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    print(None)
+
+
+def retain_archives(directory):
+    """Enforce age, count and compressed-byte bounds on recorder-owned files.
+
+    Parameters: directory - archive directory already held under its lock.
+    Returns: None.
+    """
+    print(f"directory={directory}")
+    files = [(path, path.stat()) for path in directory.iterdir()
+             if ARCHIVE_NAME.fullmatch(path.name) and not path.is_symlink() and path.is_file()]
+    files.sort(key=lambda entry: (entry[1].st_mtime_ns, entry[0].name), reverse=True)
+    total = count = 0
+    cutoff = time.time() - ARCHIVE_AGE
+    for path, stat in files:
+        if stat.st_mtime < cutoff or count >= ARCHIVE_COUNT:
+            path.unlink()
+            continue
+        if stat.st_size > SEGMENT_BYTES:
+            trim_legacy_archive(path)
+        size = path.stat().st_size
+        if total + size > DIRECTORY_BYTES:
+            path.unlink()
+            continue
+        total += size
+        count += 1
+    print(None)
+
+
+def prune_archives(directory):
+    """Apply bounded retention to existing diagnostics without changing panes.
+
+    Parameters: directory - recorder archive directory.
+    Returns: None.
+    """
+    print(f"directory={directory}")
+    with lock_directory(directory):
+        retain_archives(directory)
+    print(None)
+
+
+def record_stream(stream, path):
+    """Record finalized gzip members, rotating files and retaining recent history.
+
+    Parameters: stream - binary input stream; path - initial output archive path.
     Returns: None.
     """
     print(f"stream={stream} path={path}")
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    with os.fdopen(descriptor, "ab", buffering=0) as output:
-        if os.fstat(output.fileno()).st_size == 0:
-            output.write(gzip.compress(b"", compresslevel=1, mtime=0))
-        while chunk := stream.read1(65536):
-            # Each member is finalized before its bytes are published. A killed
-            # recorder cannot invalidate earlier chunks, and live archives read
-            # without waiting for this long-running pane to exit.
-            member = memoryview(gzip.compress(chunk, compresslevel=1, mtime=0))
-            while member:
-                written = output.write(member)
-                member = member[written:]
+    directory = path.parent
+    with lock_directory(directory):
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "ab", buffering=0) as output:
+            if os.fstat(output.fileno()).st_size == 0:
+                output.write(gzip.compress(b"", compresslevel=1, mtime=0))
+        retain_archives(directory)
+    while chunk := stream.read1(65536):
+        member = gzip.compress(chunk, compresslevel=1, mtime=0)
+        with lock_directory(directory):
+            if path.exists() and path.stat().st_size + len(member) > SEGMENT_BYTES:
+                path = archive_path(directory, "output")
+            # Open and close under the same lock as pruning. A sleeping writer
+            # whose old file was retired reopens it, never grows an unlinked file.
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, "ab", buffering=0) as output:
+                output.write(member)
+            retain_archives(directory)
     print(None)
 
 
@@ -83,7 +198,7 @@ def tmux(*arguments):
 
 
 def archive_path(directory, suffix):
-    """Reserve a private uniquely named archive without deleting old ones.
+    """Reserve a private uniquely named archive for bounded retention.
 
     Parameters: directory - archive directory; suffix - archive role.
     Returns: reserved archive path.
@@ -149,6 +264,7 @@ def start_background(args):
     # Record ongoing output before taking a snapshot; this closes the gap
     # between capture and restart. Snapshot/live overlap intentionally preserves
     # everything rather than deduplicating terminal control sequences.
+    prune_archives(args.archive_dir)
     connect_recorder(old_pane, args.archive_dir)
     snapshot_history(old_pane, args.archive_dir)
     tmux("set-window-option", "-t", args.target, "history-limit", str(HISTORY_LIMIT))
@@ -182,6 +298,9 @@ def main(argv):
     args = parse_command(argv)
     if args.operation == "record":
         record_stream(sys.stdin.buffer, args.file)
+        result = 0
+    elif args.operation == "prune":
+        prune_archives(args.archive_dir)
         result = 0
     else:
         result = start_background(args)
