@@ -61,9 +61,10 @@ master menu discover the same nested screens without sourcing child internals.
 ## Background terminal output preservation
 
 The `tmux-background-output` command preserves background diagnostics without
-unlimited tmux memory growth. Its commands are `record --file FILE` and
-`start --target SESSION:WINDOW --archive-dir DIR [--cwd DIR] -- COMMAND`.
-`record` appends gzip members from stdin and prints nothing. `start` bounds
+unlimited tmux memory growth. Its commands are `record --file FILE`,
+`start --target SESSION:WINDOW --archive-dir DIR [--cwd DIR] -- COMMAND`, and
+`prune --archive-dir DIR`.
+`record` appends gzip members from stdin. `start` bounds
 the window history to 2000 lines and archives the previous pane output.
 The Python module remains for callers that import the file directly.
 
@@ -72,8 +73,10 @@ python3 tmux_background_output.py start --target demo:monitor \
   --archive-dir "$HOME/.local/state/demo/scrollback" --cwd "$HOME/projects/demo" \
   -- bash monitor.sh
 python3 tmux_background_output.py record --file output.gz < console-output.txt
+python3 tmux_background_output.py prune --archive-dir "$HOME/.local/state/demo/scrollback"
 gzip -cd "$HOME/.local/state/demo/scrollback/"*.gz | less -R
 python3 -m unittest discover -s tests -p test_tmux_background_output.py
+python3 -m unittest discover -s tests -p test_scrollback_retention.py
 ```
 
 `start` requires an existing session and a dedicated single-pane background
@@ -83,9 +86,35 @@ old grid is replaced only after preservation; an already bounded pane keeps its
 ID. Other windows and global history settings are untouched. `--cwd` is optional.
 `record` appends stdin bytes as independently finalized gzip members, limiting
 its working buffer to 64 KiB and keeping previous members readable after a
-recorder interruption. Archive filenames are unique, files are private, and no
-retention limit deletes old diagnostics. Snapshot/live archives may overlap.
-Archives grow on disk; previously discarded tmux rows cannot be recovered.
+recorder interruption. Archive filenames are unique and files are private.
+Snapshot/live archives may overlap. Previously discarded tmux rows cannot be recovered.
+
+Recording rotates at 8 MiB of compressed data per file. Each archive directory
+keeps the newest diagnostics within **256 MiB, 64 files and seven days**, pruning
+older recorder-owned output/snapshot files on startup and while recording. These
+are maximum bounds; a busy monitor can fill the budget sooner than seven days.
+An oversized legacy archive keeps its newest complete gzip members from the last
+8 MiB, dropping an incomplete final member. Migration reads only this bounded
+tail, so multi-gigabyte files need no full decompression. Files outside the
+recorder's timestamped naming pattern, directories and symlinks are untouched.
+
+`prune` applies this policy immediately without restarting or altering tmux.
+Writers and pruning share a directory lock; each write closes its file before
+unlocking, preventing continued writes into deleted files. `record --file FILE`
+can rotate into additional timestamped output archives in FILE's parent directory;
+read the directory's gzip files in filename order to include those segments.
+Use a dedicated diagnostic directory. An arbitrary initial FILE is rotated but
+is not eligible for directory pruning unless it follows the recorder's naming
+pattern. Retention changes only background diagnostic archives; other panes and
+agent conversation history keep their existing limits.
+
+Both the native `tmux-background-output` binary and the Python entrypoint use the
+same recorder implementation. The native binary embeds that implementation and
+requires `python3`; recording compresses in-process through Python's standard
+library rather than starting a gzip subprocess for every chunk. The installed
+framework includes the Python source for consumers that copy it directly.
+The Python entrypoint prints function diagnostics; tmux redirects the recorder's
+stdout. The native recorder keeps stdout empty and emits diagnostics on stderr.
 
 ## Installing this repository as modules
 
