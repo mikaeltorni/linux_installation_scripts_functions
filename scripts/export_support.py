@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_DIRECTORIES = frozenset(('__pycache__', '.log'))
 FILES = (
     'component_loader.sh', 'component_logging.sh', 'component_menu.sh',
     'component_runtime.sh', 'installer_helpers.sh', 'safe_system_action.sh',
@@ -57,7 +58,7 @@ def validate_export(destination, expected):
     Returns: None when all files match and no unowned files are present.
     """
     print(f'destination={destination!r} expected_names={tuple(expected)!r}', file=sys.stderr)
-    if not destination.is_dir() or {path.name for path in destination.iterdir() if path.name != '__pycache__'} != set(expected):
+    if not destination.is_dir() or {path.name for path in destination.iterdir() if path.name not in RUNTIME_DIRECTORIES} != set(expected):
         raise ValueError('support file set differs; regenerate the export')
     validate_owned_paths(destination, set(expected))
     for name, content in expected.items():
@@ -109,7 +110,7 @@ def export_support(destination, check):
         for name, content in expected.items():
             (destination / name).write_bytes(content)
         for path in destination.iterdir():
-            if path.name not in expected and path.name != '__pycache__':
+            if path.name not in expected and path.name not in RUNTIME_DIRECTORIES:
                 path.unlink()
     validate_export(destination, expected)
     print(None, file=sys.stderr)
@@ -119,11 +120,11 @@ def validate_owned_paths(destination, owned):
     """Protect unowned files from replacement in a generated support directory.
 
     Parameters: destination - existing support directory; owned - allowed filenames.
-    Returns: None when entries are owned files or a real Python bytecode cache.
+    Returns: None when entries are owned files or real runtime cache/diagnostic directories.
     """
     print(f'destination={destination!r} owned={sorted(owned)!r}', file=sys.stderr)
     for path in destination.iterdir():
-        if path.name == '__pycache__' and path.is_dir() and not path.is_symlink():
+        if path.name in RUNTIME_DIRECTORIES and path.is_dir() and not path.is_symlink():
             continue
         if path.name not in owned or path.is_symlink() or not path.is_file():
             raise ValueError(f'refusing to overwrite unowned support entry: {path.name}')
