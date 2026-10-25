@@ -304,12 +304,18 @@ def test_preflight_and_postflight_run_once():
     assert out.index("preflight") < out.index("ran:a") < out.index("postflight")
 
 
-def test_no_match_is_a_noop():
-    """An unmatched selection runs nothing, including the preflight."""
+def test_unknown_component_is_rejected():
+    """Reject unknown components without running installation hooks.
+
+    Parameters: none.
+    Returns: None.
+    """
+    print("parameters=none")
     rc, out = run(["--select", "nonexistent"])
-    assert rc == 0, out
+    assert rc == 2, out
     assert "preflight" not in out and "postflight" not in out
 
+    print(None)
 
 def test_count_helpers():
     """The menu should report enabled/total counts like the '5/8' indicator."""
@@ -899,19 +905,27 @@ component_main --slect alpha
     assert "unknown option" in (result.stdout + result.stderr).lower()
 
 
-def test_component_runtime_still_ignores_stray_positional_token():
-    """Non-option leftovers stay non-fatal so existing callers keep working."""
+def test_component_runtime_rejects_stray_positional_token():
+    """Reject trailing operands before any component runs.
+
+    Parameters: none.
+    Returns: None.
+    """
+    print("parameters=none")
     script = f"""
 set -uo pipefail
 source "{REPO}/component_runtime.sh"
 ISC_REPO_NAME=test_repo
 ISC_COMPONENTS=("alpha|Alpha|on|install_alpha")
-install_alpha() {{ printf 'RAN alpha\\n'; }}
+# Record alpha installation.
+# Parameters: none. Returns: zero.
+install_alpha() {{ printf 'parameters=none\\n' >&2; printf 'RAN alpha\\n'; printf '0\\n' >&2; }}
 component_main --select alpha stray-token
 """
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "RAN alpha" in result.stdout
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "RAN alpha" not in result.stdout
+    print(None)
 
 
 def test_unused_monitor_label_helper_is_gone():
