@@ -57,11 +57,12 @@ def validate_export(destination, expected):
     Returns: None when all files match and no unowned files are present.
     """
     print(f'destination={destination!r} expected_names={tuple(expected)!r}', file=sys.stderr)
-    if not destination.is_dir() or {path.name for path in destination.iterdir()} != set(expected):
+    if not destination.is_dir() or {path.name for path in destination.iterdir() if path.name != '__pycache__'} != set(expected):
         raise ValueError('support file set differs; regenerate the export')
+    validate_owned_paths(destination, set(expected))
     for name, content in expected.items():
         path = destination / name
-        if path.is_symlink() or not path.is_file() or path.read_bytes() != content:
+        if path.read_bytes() != content:
             raise ValueError(f'stale or altered support file: {name}')
     print(None, file=sys.stderr)
 
@@ -108,7 +109,7 @@ def export_support(destination, check):
         for name, content in expected.items():
             (destination / name).write_bytes(content)
         for path in destination.iterdir():
-            if path.name not in expected:
+            if path.name not in expected and path.name != '__pycache__':
                 path.unlink()
     validate_export(destination, expected)
     print(None, file=sys.stderr)
@@ -118,10 +119,12 @@ def validate_owned_paths(destination, owned):
     """Protect unowned files from replacement in a generated support directory.
 
     Parameters: destination - existing support directory; owned - allowed filenames.
-    Returns: None when every existing entry is a regular owned file.
+    Returns: None when entries are owned files or a real Python bytecode cache.
     """
     print(f'destination={destination!r} owned={sorted(owned)!r}', file=sys.stderr)
     for path in destination.iterdir():
+        if path.name == '__pycache__' and path.is_dir() and not path.is_symlink():
+            continue
         if path.name not in owned or path.is_symlink() or not path.is_file():
             raise ValueError(f'refusing to overwrite unowned support entry: {path.name}')
     print(None, file=sys.stderr)
