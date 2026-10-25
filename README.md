@@ -348,3 +348,56 @@ You are solely responsible for determining whether this software is suitable, sa
 The authors and copyright holders make no guarantees regarding security, reliability, availability, correctness, compliance, non-infringement, or fitness for any particular purpose.
 
 This notice is intended to clarify the nature of the project and does not impose additional restrictions beyond the MIT License.
+
+## Generated standalone installer support
+
+`python3 scripts/export_support.py --output /path/to/owner/.installer-support`
+creates the explicit MIT library subset used by standalone owner installers.
+`--check` verifies exact packaged files and content; `--help` shows usage.
+The package contains LICENSE.md, bootstrap.sh and a manifest with source
+provenance, a content-addressed source fingerprint and SHA-256 file hashes.
+Regenerate consumers from this owner; do not hand-edit generated copies.
+Recognized real runtime cache/log directories are retained; symlinks and unknown
+package entries are rejected. Keep application source outside these packages.
+
+```bash
+python3 scripts/export_support.py --output /path/to/owner/.installer-support
+python3 scripts/export_support.py --output /path/to/owner/.installer-support --check
+```
+
+Owners source `.installer-support/bootstrap.sh`, activate components and declare
+their manifest. Explicit `ISC_COMPONENT_LIB_DIR` / `ISC_FUNCTIONS_DIR` overrides
+remain supported; ordinary bootstrap needs neither network access nor a sibling
+checkout. Bash and Python 3 provide the packaged configuration/menu helpers.
+
+The shared `component_main` entrypoint accepts raw arguments once and routes
+converted modes/config/auth and ready ID arrays to operations. Its interface is
+`--help`/`-h`, `--list-components`, `--default`, `--all`, `--select IDs`,
+`--reconfigure IDs`, `--uninstall IDs`, `--detect`, `--export-selection`,
+`--config NAME`, `--auth`, `--list-configurable-components`,
+`--list-select-configure-components`, `--list-component-config-values` and
+`--configure-component ID`. Value flags also accept `--option=value`.
+No arguments open the common menu on a terminal or apply the active config
+without one. Explicit empty install selections retain owner core/preflight
+behavior; empty removal does nothing. Detection reports installed/absent.
+Missing/extra operands, conflicting modes and unknown/duplicate component IDs
+reject before core/component mutations. Queries do not install anything.
+
+Terminal plans and explicit CLI selections share converted ID validation and
+installation/removal operations. Owners whose cores need bare-call Bash error
+semantics can call `isc_route_readonly_args` for complete early parsing, then
+`isc_plan_install` before their core. `ISC_PLAN_ACTION` is install/remove/cancel;
+`ISC_PLAN_APPLY_IDS` and `ISC_PLAN_UNINSTALL_IDS` are ready arrays. Run the core
+only for install and apply the accepted plan through `_isc_apply_plan` with
+`ISC_ARGUMENT_ORIGIN`; do not parse the raw command or menu output again.
+Plan before piping output to a log so the terminal stays available.
+
+Removal runs callbacks in reverse manifest order. A missing removal callback
+clears only its receipt; actual resources/settings remain and live detection
+can still report them installed. Keep detector diagnostics on stderr; query
+stdout carries metadata/JSON only. Configuration-status callbacks must not build
+or install helpers. Reboot/poweroff helpers must never execute in verification.
+
+Focused regressions: `python3 tests/check_lifecycle_contract.py`,
+`python3 tests/check_menu_lifecycle.py`, `python3 tests/check_export_stream.py`,
+and `python3 tests/check_support_export.py`; retained tests: `python3 -m pytest -q`.
