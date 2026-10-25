@@ -69,7 +69,16 @@ install_component() { printf 'parameters=none\\n' >&2; printf 'installed\\n' >> 
 remove_component() { printf 'parameters=none\\n' >&2; printf 'removed\\n' >> "$MARKER"; printf '0\\n' >&2; }
 ISC_REPO_NAME=fixture
 ISC_COMPONENTS=("task_workspaces|Named task workspaces|on|install_component||remove_component")
-component_main "$@"
+if [[ "${LEGACY_CORE:-0}" == 1 ]]; then
+  if isc_route_readonly_args "$@"; then exit $?; fi
+  isc_plan_install
+  case "$ISC_PLAN_ACTION" in
+    install) printf 'core\\n' >> "$MARKER" ;;
+  esac
+  _isc_apply_plan "$ISC_ARGUMENT_ORIGIN"
+else
+  component_main "$@"
+fi
 ''')
     environment = dict(PATH=os.environ['PATH'], HOME=str(temporary/'home'), XDG_STATE_HOME=str(temporary/'state'), FIXTURE_ROOT=str(ROOT), FIXTURE_DIRECTORY=str(temporary), MARKER=str(marker), TERM='xterm')
     command = ['bash', str(fixture)]
@@ -79,4 +88,16 @@ component_main "$@"
     assert status == 0 and marker.read_text() == 'installed\n', output
     status, output = run_terminal(command, environment, b'u\r')
     assert status == 0 and marker.read_text() == 'installed\nremoved\n', output
+    marker.unlink()
+    environment['LEGACY_CORE'] = '1'
+    status, output = run_terminal(command, environment, b'q')
+    assert status == 0 and not marker.exists(), output
+    status, output = run_terminal(command, environment, b' \r')
+    assert status == 0 and marker.read_text() == 'core\n', output
+    marker.unlink()
+    status, output = run_terminal(command, environment, b'\r')
+    assert status == 0 and marker.read_text() == 'core\ninstalled\n', output
+    marker.unlink()
+    status, output = run_terminal(command, environment, b'u\r')
+    assert status == 0 and marker.read_text() == 'removed\n', output
 print('PASS: standalone menu cancellation, installation and removal with strict Bash')
