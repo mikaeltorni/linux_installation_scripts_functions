@@ -1,0 +1,67 @@
+"""Exercise exported shared framework support as an isolated, network-free consumer."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+root = Path(__file__).resolve().parents[1]
+entrypoint = root / 'scripts/export_support.py'
+with tempfile.TemporaryDirectory(prefix='installer-support-') as directory:
+    temporary = Path(directory)
+    consumer = temporary / 'consumer'
+    consumer.mkdir()
+    support = consumer / '.installer-support'
+    command = [sys.executable, str(entrypoint), '--output', str(support)]
+    result = subprocess.run(command, text=True, capture_output=True)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    document = json.loads((support / 'manifest.json').read_text())
+    assert document['source_repository'] == 'https://github.com/mikaeltorni/linux_installation_scripts_functions'
+    assert document['license'] == 'MIT'
+    assert 'Permission is hereby granted' in (support / 'LICENSE.md').read_text()
+    assert {'component_runtime.sh', 'component_menu.sh', 'installer_helpers.sh', 'installation_config.py', 'hotkey_capture.py', 'monitor_layout.py', 'bootstrap.sh'} <= set(document['files'])
+    before = {path.name: path.read_bytes() for path in support.iterdir()}
+    check = subprocess.run([*command, '--check'], text=True, capture_output=True)
+    assert check.returncode == 0, (check.stdout, check.stderr)
+    assert before == {path.name: path.read_bytes() for path in support.iterdir()}
+    repeated = subprocess.run(command, text=True, capture_output=True)
+    assert repeated.returncode == 0 and before == {path.name: path.read_bytes() for path in support.iterdir()}
+    tools = temporary / 'tools'
+    tools.mkdir()
+    marker = temporary / 'network-used'
+    for name in ('curl', 'wget', 'git'):
+        file = tools / name
+        file.write_text('#!/bin/sh\nprintf "%s\\n" "$0 $*" >> "$NETWORK_MARKER"\nexit 97\n')
+        file.chmod(0o755)
+    script = consumer / 'install.sh'
+    script.write_text('''#!/bin/bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/.installer-support/bootstrap.sh"
+isc_load_helpers
+isc_activate_components
+ISC_REPO_NAME=demo
+ISC_COMPONENTS=("alpha|Alpha|on|apply_alpha")
+apply_alpha() { printf 'alpha\\n' >> "$CALLS"; }
+component_main "$@"
+''')
+    env = {key: value for key, value in os.environ.items() if not key.startswith(('ISC_', 'SUDO_'))}
+    env.update(HOME=str(temporary / 'home'), XDG_CACHE_HOME=str(temporary / 'cache'), XDG_STATE_HOME=str(temporary / 'state'), PATH=str(tools) + ':/usr/bin:/bin', NETWORK_MARKER=str(marker), CALLS=str(temporary / 'calls'))
+    listed = subprocess.run(['bash', str(script), '--list-components'], text=True, capture_output=True, env=env)
+    assert listed.returncode == 0 and 'alpha\tAlpha\ton' in listed.stdout, (listed.stdout, listed.stderr)
+    assert not (temporary / 'calls').exists()
+    installed = subprocess.run(['bash', str(script), '--select', 'alpha'], text=True, capture_output=True, env=env)
+    assert installed.returncode == 0, (installed.stdout, installed.stderr)
+    assert (temporary / 'calls').read_text() == 'alpha\n'
+    rejected = subprocess.run(['bash', str(script), '--unknown-option'], text=True, capture_output=True, env=env)
+    assert rejected.returncode != 0
+    assert (temporary / 'calls').read_text() == 'alpha\n'
+    assert not marker.exists(), 'Isolated consumer attempted a network download'
+    (support / 'component_menu.sh').write_text('changed\n')
+    stale = subprocess.run([*command, '--check'], text=True, capture_output=True)
+    assert stale.returncode != 0, 'Changed generated support was accepted'
+    for bad in (['--output'], ['--unknown'], ['--output', str(root)]):
+        rejected = subprocess.run([sys.executable, str(entrypoint), *bad], text=True, capture_output=True)
+        assert rejected.returncode != 0, bad
+print('PASS: licensed reproducible support export, exact verification, isolated framework consumer and rejection preserving state')
