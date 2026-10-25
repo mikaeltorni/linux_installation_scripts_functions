@@ -184,26 +184,20 @@ _isc_clear_receipt() {
   isc_log_debug "cleared install receipt for '$id'"
 }
 
-# Decide whether component id $1 is installed on this machine.
-#
-# Uses the component's detect function (manifest field 4) as the authoritative
-# live result when defined. Falls back to an install receipt only when no custom
-# detector exists, so stale receipts never mask a removed or broken feature.
-#
-# Arguments:
-#   $1 - component id to test.
-#
-# Returns:
-#   0 when the component is installed, 1 otherwise.
+# Classify live installation state without leaking detector diagnostics into query data.
+# Parameters: $1 - converted component identifier. Returns: the detector status, or zero/one for its receipt.
 _isc_is_installed() {
-  local id="$1" detect dir
+  printf 'id=%s\n' "$1" >&2
+  local id="$1" detect dir rc
   detect="$(_isc_field "$id" 4)"
   if [[ -n "$detect" ]] && declare -F "$detect" >/dev/null 2>&1; then
-    "$detect"
-    return $?
+    if "$detect" >&2; then rc=0; else rc=$?; fi
+  else
+    dir="$(_isc_receipt_dir)"
+    if [[ -f "$dir/$id" ]]; then rc=0; else rc=1; fi
   fi
-  dir="$(_isc_receipt_dir)"
-  [[ -f "$dir/$id" ]]
+  printf '%s\n' "$rc" >&2
+  return "$rc"
 }
 
 # Print "id<TAB>installed|absent" for every component, in manifest order.
