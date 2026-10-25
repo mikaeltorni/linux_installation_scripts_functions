@@ -707,10 +707,14 @@ def test_interactive_submenu_is_not_redirected_to_devnull():
     Regression: `_isc_interactive_select >/dev/null` sent the whole menu to
     /dev/null (it only sets result globals, echoing nothing), leaving the user
     staring at a blank screen while the menu silently waited for keypresses.
+    Parameters: none.
+    Returns: None.
     """
+    print("parameters=none")
     runtime = (REPO / "component_runtime.sh").read_text(encoding="utf-8")
     assert "_isc_interactive_select >/dev/null" not in runtime
-    assert 'cm_single_submenu "$repo"; rc=$?' in runtime
+    assert 'if cm_single_submenu "$repo"; then rc=0; else rc=$?; fi' in runtime
+    print(None)
 
 
 def test_hotkey_capture_is_opt_in():
