@@ -4,7 +4,6 @@ use repeatable_fields::monitor;
 use serde_json::Value;
 use std::env;
 use std::fs;
-use std::io::{self, Write};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -55,9 +54,4 @@ fn load_rows(args: &[String]) -> Result<Vec<monitor::Row>, String> {
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.iter().position(|arg| arg == name).and_then(|index| args.get(index + 1)).map(String::as_str)
-}
-
-#[allow(dead_code)]
-fn _keep_stdout() {
-    let _ = io::stdout().flush();
 }
