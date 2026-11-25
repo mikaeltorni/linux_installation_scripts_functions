@@ -1,13 +1,33 @@
-# linux_installation_scripts_functions
+# Linux Installation Scripts Functions — Bash Installer Component Framework
 
-> Part of [installation_scripts](https://github.com/mikaeltorni/installation_scripts) — the shared, pure-Bash installer component-selection framework for the Ubuntu 24.04 desktop setup chain. Tested on Ubuntu 24.04.4 LTS; the Bash framework is portable to any system with Bash 4+ (macOS/WSL untested).
+[![Last commit: 2026-11-25](docs/badges/last-commit.svg)](https://github.com/mikaeltorni/linux_installation_scripts_functions/commits/master)
+[![Commits in 30 days: 4](docs/badges/commit-activity.svg)](https://github.com/mikaeltorni/linux_installation_scripts_functions/graphs/commit-activity)
+[![Open issues: 0](docs/badges/issues.svg)](https://github.com/mikaeltorni/linux_installation_scripts_functions/issues)
 
-Shared, reusable installer functions for the
+GitHub default-branch activity measured on 2026-11-25.
+
+Linux Installation Scripts Functions is a Bash installer component framework for building terminal menus, selecting setup modules, and packaging offline support.
+
+[Module installation](#installing-this-repository-as-modules) · [Consumer setup](#how-a-repository-uses-it) · [Generated support](#generated-standalone-installer-support) · [Tests](#tests) · [MIT license](#license)
+
+## Bash installer component framework quickstart
+
+From the framework checkout, list the optional modules and export the resolved
+selection as JSON:
+
+```bash
+bash install.sh --list-components
+bash install.sh --export-selection
+```
+
+The list includes the terminal menu, component runtime, and installer helpers.
+Both queries preserve the deployment cache.
+
+The framework is the source for shared tooling used by the
 [`installation_scripts`](https://github.com/mikaeltorni/installation_scripts)
-Ubuntu desktop setup chain. This repository is the **single source of truth** for
-the interactive installer component-selection framework. The master installer
-and every standalone repository installer load these files instead of vendoring
-their own copies, so a change here updates all of them at once.
+setup chain. Standalone owners can ship the generated MIT-licensed library
+subset in `.installer-support/` for offline discovery. Maintainers can also
+override the framework checkout during development.
 
 ## Repository dependencies
 
@@ -348,6 +368,36 @@ You are solely responsible for determining whether this software is suitable, sa
 The authors and copyright holders make no guarantees regarding security, reliability, availability, correctness, compliance, non-infringement, or fitness for any particular purpose.
 
 This notice is intended to clarify the nature of the project and does not impose additional restrictions beyond the MIT License.
+
+## Bash installer component framework FAQ
+
+### How do I see what modules the framework installer can deploy?
+
+Run `bash install.sh --list-components`. It prints the module IDs, labels,
+and default enablement.
+
+### How do I get the selected modules as JSON?
+
+Use `bash install.sh --export-selection` from the framework checkout.
+The export reports the resolved standalone selection while leaving the
+deployment cache untouched.
+
+### Where does a framework install put its files?
+
+The default path is `${XDG_CACHE_HOME:-$HOME/.cache}/installation_scripts/components`.
+Set `ISC_INSTALL_DIR` to use a separate deployment directory.
+
+### Can an owner discover installer components offline?
+
+An owner can ship the generated support package and source
+`.installer-support/bootstrap.sh` in its installer. The packaged loader
+resolves the framework from that checkout.
+
+### How do I check whether a packaged support copy matches this source?
+
+Run the documented `scripts/export_support.py` command with the package's
+`--output` directory and add `--check`. The check compares the explicit
+library subset, manifest, license, and file contents.
 
 ## Generated standalone installer support
 
