@@ -14,6 +14,7 @@ tests run install.sh against a throwaway ISC_INSTALL_DIR and assert:
 No system state outside the temporary directory changes.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -102,6 +103,33 @@ def test_list_components_lists_optional_modules_default_on():
         ], out
         # Listing must be side-effect free: nothing deployed.
         assert not install_dir.exists(), "listing must not create the install dir"
+
+
+def test_readonly_framework_queries_leave_cache_untouched():
+    """Query the framework installer without deploying its files.
+
+    Parameters: none.
+    Returns: None.
+    """
+    print("parameters=none")
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        install_dir = root / "components"
+        env = dict(os.environ, HOME=str(root / "home"), XDG_CONFIG_HOME=str(root / "config"),
+                   XDG_STATE_HOME=str(root / "state"), ISC_INSTALL_DIR=str(install_dir))
+        for arguments, expected in ((["--export-selection"], 0), (["--detect"], 0),
+                                    (["--select", "not-a-module"], 2)):
+            result = subprocess.run(["bash", str(INSTALL), *arguments], cwd=REPO, env=env,
+                                    capture_output=True, text=True, check=False)
+            assert result.returncode == expected, (arguments, result.stderr)
+            assert not install_dir.exists(), f"{arguments} must not deploy the framework core"
+            if arguments == ["--export-selection"]:
+                selection = json.loads(result.stdout)
+                assert selection["repo"] == "linux_installation_scripts_functions"
+                assert set(selection["components"]) == set(OPTIONAL_FILES)
+            if arguments == ["--detect"]:
+                assert result.stdout.splitlines() == [f"{name}\tabsent" for name in OPTIONAL_FILES]
+    print(None)
 
 
 def test_core_installed_even_with_no_optional_modules():

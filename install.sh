@@ -54,20 +54,27 @@ ISC_FUNCTIONS_DIR="$SCRIPT_DIR" isc_activate_components
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/installer/components.sh"
 
+# Execute the parsed deployment plan and install the core with every install selection.
+# Parameters: none; consumes the parsed installer plan. Returns: operation exit status.
 main() {
-  # CORE first, always — independent of the optional selection — so the
-  # framework core is present no matter what the user chooses.
-  isc_install_core
-  # OPTIONAL default-on modules, via the shared component runtime.
-  component_main "$@"
-  isc_install_summary
-  msg "Shared installer component framework deployment complete."
+  printf 'parameters=none\n' >&2
+  isc_plan_install
+  if [[ "$ISC_PLAN_ACTION" == cancel ]]; then
+    printf '0\n' >&2
+    return 0
+  fi
+  if [[ "$ISC_PLAN_ACTION" == install ]]; then
+    isc_install_core
+  fi
+  _isc_apply_plan "$ISC_ARGUMENT_ORIGIN"
+  if [[ "$ISC_PLAN_ACTION" == install ]]; then
+    isc_install_summary
+    msg "Shared installer component framework deployment complete."
+  fi
+  printf '0\n' >&2
+  return 0
 }
 
-# Listing/help must print only their own output (the master installer parses
-# --list-components) and must not deploy anything.
-case "${1:-}" in
-  --list-components|--help|-h) component_main "$@"; exit $? ;;
-esac
-
-main "$@"
+# Parse once and execute queries and removals before planning any deployment.
+if isc_route_readonly_args "$@"; then exit $?; fi
+main
